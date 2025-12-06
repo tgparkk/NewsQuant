@@ -47,10 +47,35 @@ class NewsDatabase:
                 url TEXT NOT NULL,
                 related_stocks TEXT,
                 sentiment_score REAL,
+                importance_score REAL,
+                impact_score REAL,
+                timeliness_score REAL,
+                overall_score REAL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        
+        # 기존 테이블에 새 컬럼 추가 (마이그레이션)
+        try:
+            cursor.execute("ALTER TABLE news ADD COLUMN importance_score REAL")
+        except sqlite3.OperationalError:
+            pass  # 컬럼이 이미 존재하는 경우
+        
+        try:
+            cursor.execute("ALTER TABLE news ADD COLUMN impact_score REAL")
+        except sqlite3.OperationalError:
+            pass
+        
+        try:
+            cursor.execute("ALTER TABLE news ADD COLUMN timeliness_score REAL")
+        except sqlite3.OperationalError:
+            pass
+        
+        try:
+            cursor.execute("ALTER TABLE news ADD COLUMN overall_score REAL")
+        except sqlite3.OperationalError:
+            pass
         
         # 인덱스 생성 (조회 성능 향상)
         cursor.execute("""
@@ -96,7 +121,11 @@ class NewsDatabase:
                 - category: 카테고리
                 - url: URL (필수)
                 - related_stocks: 관련 종목 코드 (콤마 구분)
-                - sentiment_score: 감성 점수
+                - sentiment_score: 감성 점수 (-1.0 ~ +1.0)
+                - importance_score: 중요도 점수 (0.0 ~ 1.0)
+                - impact_score: 영향도 점수 (0.0 ~ 1.0)
+                - timeliness_score: 실시간성 점수 (0.0 ~ 1.0)
+                - overall_score: 종합 점수
         
         Returns:
             삽입 성공 여부
@@ -108,8 +137,9 @@ class NewsDatabase:
             cursor.execute("""
                 INSERT OR REPLACE INTO news 
                 (news_id, title, content, published_at, source, category, 
-                 url, related_stocks, sentiment_score, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 url, related_stocks, sentiment_score, importance_score, 
+                 impact_score, timeliness_score, overall_score, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 news_data.get('news_id'),
                 news_data.get('title'),
@@ -120,6 +150,10 @@ class NewsDatabase:
                 news_data.get('url'),
                 news_data.get('related_stocks', ''),
                 news_data.get('sentiment_score'),
+                news_data.get('importance_score'),
+                news_data.get('impact_score'),
+                news_data.get('timeliness_score'),
+                news_data.get('overall_score'),
                 datetime.now().isoformat()
             ))
             

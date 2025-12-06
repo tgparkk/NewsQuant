@@ -30,8 +30,11 @@ class HankyungCrawler(BaseCrawler):
         # 경제/증시 섹션 URL들
         sections = [
             {'url': 'https://www.hankyung.com/economy', 'name': '경제'},
-            {'url': 'https://www.hankyung.com/finance', 'name': '금융'},
-            {'url': 'https://www.hankyung.com/stock', 'name': '증시'}
+            {'url': 'https://www.hankyung.com/financial-market', 'name': '금융시장'},
+            {'url': 'https://www.hankyung.com/industry', 'name': '산업'},
+            {'url': 'https://www.hankyung.com/tech', 'name': '기술'},
+            {'url': 'https://www.hankyung.com/international', 'name': '국제'},
+            {'url': 'https://www.hankyung.com/distribution', 'name': '유통'}
         ]
         
         for section in sections:
@@ -85,6 +88,10 @@ class HankyungCrawler(BaseCrawler):
                             summary_tag = item.find(class_=re.compile(r'summary|desc|lead|preview'))
                             summary = self.extract_text(summary_tag) if summary_tag else ""
                             
+                            # 제목과 요약에서 주식 코드 추출
+                            text_for_extraction = f"{title} {summary}"
+                            related_stocks = self.extract_stock_codes(text_for_extraction)
+                            
                             news_data = {
                                 'news_id': self.generate_news_id(news_url, title),
                                 'title': title,
@@ -93,7 +100,7 @@ class HankyungCrawler(BaseCrawler):
                                 'source': self.source_name,
                                 'category': section['name'],
                                 'url': news_url,
-                                'related_stocks': self.extract_stock_codes(title + " " + summary),
+                                'related_stocks': related_stocks,
                                 'sentiment_score': None
                             }
                             
@@ -114,6 +121,16 @@ class HankyungCrawler(BaseCrawler):
             detail = self.crawl_news_detail(news['url'])
             if detail and detail.get('content'):
                 news['content'] = detail['content']
+                # 본문에서도 주식 코드 추출하여 기존 코드와 합치기
+                content_codes = self.extract_stock_codes(detail['content'])
+                existing_codes = news.get('related_stocks', '')
+                if content_codes:
+                    if existing_codes:
+                        # 기존 코드와 합치기 (중복 제거)
+                        all_codes = set(existing_codes.split(',')) | set(content_codes.split(','))
+                        news['related_stocks'] = ','.join(sorted(all_codes))
+                    else:
+                        news['related_stocks'] = content_codes
         
         return news_list
     
@@ -192,8 +209,4 @@ class HankyungCrawler(BaseCrawler):
         
         return datetime.now().isoformat()
     
-    def extract_stock_codes(self, text: str) -> str:
-        """종목 코드 추출"""
-        codes = re.findall(r'\b\d{6}\b', text)
-        return ','.join(set(codes))
 

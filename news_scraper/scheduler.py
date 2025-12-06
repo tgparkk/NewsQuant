@@ -11,6 +11,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 import pytz
 
 from .database import NewsDatabase
+from .sentiment_analyzer import SentimentAnalyzer
 from .crawlers.naver_finance_crawler import NaverFinanceCrawler
 from .crawlers.krx_crawler import KRXCrawler
 from .crawlers.yonhap_crawler import YonhapCrawler
@@ -30,6 +31,7 @@ class NewsScheduler:
         """
         self.db = NewsDatabase(db_path)
         self.scheduler = BlockingScheduler(timezone=pytz.timezone('Asia/Seoul'))
+        self.sentiment_analyzer = SentimentAnalyzer()
         
         # 크롤러 리스트
         self.crawlers = [
@@ -82,8 +84,19 @@ class NewsScheduler:
                 news_list = crawler.crawl_news_list(max_pages=3)  # 각 크롤러당 최대 3페이지
                 
                 if news_list:
+                    # 감성 분석 및 점수 계산
+                    analyzed_news_list = []
+                    for news in news_list:
+                        try:
+                            analyzed_news = self.sentiment_analyzer.analyze_news(news)
+                            analyzed_news_list.append(analyzed_news)
+                        except Exception as e:
+                            logger.warning(f"[{crawler.source_name}] 감성 분석 오류: {e}")
+                            # 분석 실패해도 뉴스는 저장
+                            analyzed_news_list.append(news)
+                    
                     # 데이터베이스에 저장
-                    inserted_count = self.db.insert_news_batch(news_list)
+                    inserted_count = self.db.insert_news_batch(analyzed_news_list)
                     total_news_count += inserted_count
                     
                     # 수집 로그 기록
