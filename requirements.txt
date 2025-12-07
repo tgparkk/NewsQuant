@@ -6,4 +6,6 @@ apscheduler>=3.10.0
 pandas>=2.1.0
 webdriver-manager>=4.0.0
 pytz>=2023.3
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
 

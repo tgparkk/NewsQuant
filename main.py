@@ -5,6 +5,7 @@
 import logging
 import sys
 from pathlib import Path
+from threading import Thread
 
 from news_scraper.scheduler import NewsScheduler
 from news_scraper.database import NewsDatabase
@@ -60,6 +61,9 @@ def main():
     print("  - 시장 운영 시간 (월~금 09:00~15:30): 1분마다")
     print("  - 시장 마감 후 (월~금 15:30~24:00): 5분마다")
     print("  - 주말/새벽: 30분마다")
+    print("\nAPI 서버:")
+    print("  - REST API 제공: http://127.0.0.1:8000")
+    print("  - API 문서: http://127.0.0.1:8000/docs")
     print("\n" + "=" * 60 + "\n")
     
     try:
@@ -70,8 +74,24 @@ def main():
         # 통계 출력
         show_statistics()
         
-        # 스케줄러 시작
+        # API 서버 시작 (별도 스레드)
+        from news_scraper.api.server import start_api_server
+        api_thread = Thread(
+            target=start_api_server,
+            args=("127.0.0.1", 8000),
+            daemon=True  # 메인 프로세스 종료 시 함께 종료
+        )
+        api_thread.start()
+        logger.info("=" * 60)
+        logger.info("NewsQuant API 서버 시작")
+        logger.info(f"  - API 서버: http://127.0.0.1:8000")
+        logger.info(f"  - API 문서: http://127.0.0.1:8000/docs")
+        logger.info(f"  - ReDoc 문서: http://127.0.0.1:8000/redoc")
+        logger.info("=" * 60)
+        
+        # 스케줄러 시작 (메인 스레드, 블로킹)
         scheduler = NewsScheduler()
+        logger.info("뉴스 수집 스케줄러를 시작합니다...")
         scheduler.start()
         
     except Exception as e:

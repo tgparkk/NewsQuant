@@ -26,6 +26,11 @@ class NewsDatabase:
     def get_connection(self) -> sqlite3.Connection:
         """데이터베이스 연결 반환"""
         conn = sqlite3.connect(self.db_path)
+        
+        # WAL 모드 활성화 (동시 읽기/쓰기 가능)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")  # 성능 최적화
+        
         conn.row_factory = sqlite3.Row  # 딕셔너리 형태로 결과 반환
         return conn
     
@@ -89,6 +94,12 @@ class NewsDatabase:
         """)
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_category ON news(category)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_overall_score ON news(overall_score)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_sentiment_score ON news(sentiment_score)
         """)
         
         # 뉴스 수집 로그 테이블
@@ -317,4 +328,123 @@ class NewsDatabase:
             'by_source': source_counts,
             'recent_collection': recent_stats
         }
+    
+    def get_news_by_stock(self, stock_code: str, limit: int = 50) -> List[Dict]:
+        """
+        특정 종목 관련 뉴스 조회
+        
+        Args:
+            stock_code: 종목 코드 (6자리, 예: "005930")
+            limit: 조회 개수
+        
+        Returns:
+            뉴스 데이터 리스트
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # 종목 코드로 검색 (related_stocks 필드에 포함된 경우)
+        cursor.execute("""
+            SELECT * FROM news
+            WHERE related_stocks LIKE ?
+            ORDER BY published_at DESC
+            LIMIT ?
+        """, (f'%{stock_code}%', limit))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [dict(row) for row in rows]
+    
+    def get_news_by_stocks(self, stock_codes: List[str], limit_per_stock: int = 10) -> Dict[str, List[Dict]]:
+        """
+        여러 종목의 뉴스를 한 번에 조회
+        
+        Args:
+            stock_codes: 종목 코드 리스트 (6자리, 예: ["005930", "000660"])
+            limit_per_stock: 종목당 조회 개수
+        
+        Returns:
+            {종목코드: 뉴스리스트} 형태의 딕셔너리
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        result = {}
+        
+        # 각 종목별로 조회
+        for stock_code in stock_codes:
+            cursor.execute("""
+                SELECT * FROM news
+                WHERE related_stocks LIKE ?
+                ORDER BY published_at DESC
+                LIMIT ?
+            """, (f'%{stock_code}%', limit_per_stock))
+            
+            rows = cursor.fetchall()
+            result[stock_code] = [dict(row) for row in rows]
+        
+        conn.close()
+        return result
+    
+    def search_news(self, keyword: Optional[str] = None,
+                   min_sentiment: Optional[float] = None,
+                   max_sentiment: Optional[float] = None,
+                   min_overall_score: Optional[float] = None,
+                   source: Optional[str] = None,
+                   limit: int = 100) -> List[Dict]:
+        """
+        뉴스 검색 (고급 필터링)
+        
+        Args:
+            keyword: 키워드 검색 (제목, 본문)
+            min_sentiment: 최소 감성 점수
+            max_sentiment: 최대 감성 점수
+            min_overall_score: 최소 종합 점수
+            source: 출처 필터
+            limit: 조회 개수
+        
+        Returns:
+            뉴스 데이터 리스트
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # 기본 쿼리
+        query = "SELECT * FROM news WHERE 1=1"
+        params = []
+        
+        # 키워드 검색
+        if keyword:
+            query += " AND (title LIKE ? OR content LIKE ?)"
+            params.extend([f'%{keyword}%', f'%{keyword}%'])
+        
+        # 감성 점수 필터
+        if min_sentiment is not None:
+            query += " AND sentiment_score >= ?"
+            params.append(min_sentiment)
+        
+        if max_sentiment is not None:
+            query += " AND sentiment_score <= ?"
+            params.append(max_sentiment)
+        
+        # 종합 점수 필터
+        if min_overall_score is not None:
+            query += " AND overall_score >= ?"
+            params.append(min_overall_score)
+        
+        # 출처 필터
+        if source:
+            query += " AND source = ?"
+            params.append(source)
+        
+        # 정렬 및 제한
+        query += " ORDER BY published_at DESC LIMIT ?"
+        params.append(limit)
+        
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [dict(row) for row in rows]
 
