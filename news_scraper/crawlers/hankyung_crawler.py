@@ -88,7 +88,7 @@ class HankyungCrawler(BaseCrawler):
                             summary_tag = item.find(class_=re.compile(r'summary|desc|lead|preview'))
                             summary = self.extract_text(summary_tag) if summary_tag else ""
                             
-                            # 제목과 요약에서 주식 코드 추출
+                            # 제목과 요약에서 주식 코드 추출 (초기 추출)
                             text_for_extraction = f"{title} {summary}"
                             related_stocks = self.extract_stock_codes(text_for_extraction)
                             
@@ -116,8 +116,8 @@ class HankyungCrawler(BaseCrawler):
                     logger.error(f"[{self.source_name}] 페이지 {page} 크롤링 오류: {e}")
                     continue
         
-        # 상세 내용 크롤링
-        for news in news_list[:20]:  # 최신 20개만 상세 크롤링
+        # 상세 내용 크롤링 (모든 뉴스에 대해 수행)
+        for news in news_list:
             detail = self.crawl_news_detail(news['url'])
             if detail and detail.get('content'):
                 news['content'] = detail['content']

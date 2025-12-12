@@ -17,8 +17,10 @@ logger = logging.getLogger(__name__)
 class YonhapCrawler(BaseCrawler):
     """연합인포맥스 뉴스 크롤러"""
     
-    BASE_URL = "https://www.yonhapinfomax.co.kr"
-    NEWS_LIST_URL = "https://www.yonhapinfomax.co.kr/infoboard/category.php"
+    # 연합인포맥스는 도메인이 변경되었거나 접근이 제한될 수 있음
+    # 연합뉴스 경제 섹션으로 대체
+    BASE_URL = "https://www.yna.co.kr"
+    NEWS_LIST_URL = "https://www.yna.co.kr/economy"
     
     def __init__(self):
         super().__init__("yonhap_infomax")
@@ -27,51 +29,66 @@ class YonhapCrawler(BaseCrawler):
         """뉴스 목록 크롤링"""
         news_list = []
         
-        # 증시 섹션 ID (실제 사이트 구조에 맞게 조정 필요)
+        # 연합뉴스 경제/증시 섹션들
         sections = [
-            {'id': '01', 'name': '증시'},  # 예시
-            {'id': '02', 'name': '경제'}   # 예시
+            {'url': 'https://www.yna.co.kr/economy', 'name': '경제'},
+            {'url': 'https://www.yna.co.kr/industry', 'name': '산업'},
+            {'url': 'https://www.yna.co.kr/international', 'name': '국제경제'}
         ]
         
         for section in sections:
             for page in range(1, max_pages + 1):
                 try:
-                    url = f"{self.NEWS_LIST_URL}?section={section['id']}&page={page}"
+                    url = f"{section['url']}?page={page}" if page > 1 else section['url']
                     soup = self.fetch_page(url)
                     
                     if not soup:
                         continue
                     
-                    # 뉴스 목록 추출 (실제 HTML 구조에 맞게 수정 필요)
-                    news_items = soup.find_all('div', class_='news_item') or \
-                                soup.find_all('li', class_='news-list-item') or \
-                                soup.find_all('article')
+                    # 뉴스 목록 추출 (다양한 구조 시도)
+                    news_items = soup.find_all('div', class_=re.compile(r'article|news|item|list')) or \
+                                soup.find_all('li', class_=re.compile(r'article|news|item')) or \
+                                soup.find_all('article') or \
+                                soup.find_all('a', href=re.compile(r'/view/'))
                     
                     if not news_items:
-                        # 다른 형식 시도
-                        news_items = soup.find_all('tr')[1:]  # 테이블 형식
+                        # 테이블 형식 시도
+                        table = soup.find('table')
+                        if table:
+                            news_items = table.find_all('tr')[1:]
                     
                     for item in news_items:
                         try:
                             # 제목과 링크 찾기
-                            title_tag = item.find('a')
-                            if not title_tag:
+                            if item.name == 'a':
+                                title_tag = item
+                                title = self.extract_text(item)
+                            else:
+                                title_tag = item.find('a')
+                                if not title_tag:
+                                    continue
+                                title = self.extract_text(title_tag)
+                            
+                            if not title or len(title) < 10:
                                 continue
                             
-                            title = self.extract_text(title_tag)
                             relative_url = title_tag.get('href', '')
+                            if not relative_url:
+                                continue
+                            
                             news_url = urljoin(self.BASE_URL, relative_url)
                             
                             # 날짜 정보
-                            date_tag = item.find(class_=re.compile(r'date|time|pub'))
-                            if not date_tag:
-                                date_tag = item.find('span', class_=re.compile(r'date|time'))
-                            
+                            date_tag = item.find(class_=re.compile(r'date|time|pub|reg')) or \
+                                      item.find('time')
                             date_str = self.extract_text(date_tag) if date_tag else ""
+                            if date_tag and date_tag.get('datetime'):
+                                date_str = date_tag.get('datetime')
+                            
                             published_at = self.parse_date_string(date_str)
                             
                             # 요약
-                            summary_tag = item.find(class_=re.compile(r'summary|desc|lead'))
+                            summary_tag = item.find(class_=re.compile(r'summary|desc|lead|preview|intro'))
                             summary = self.extract_text(summary_tag) if summary_tag else ""
                             
                             news_data = {
@@ -98,8 +115,8 @@ class YonhapCrawler(BaseCrawler):
                     logger.error(f"[{self.source_name}] 페이지 {page} 크롤링 오류: {e}")
                     continue
         
-        # 상세 내용 크롤링
-        for news in news_list:
+        # 상세 내용 크롤링 (최신 20개만)
+        for news in news_list[:20]:
             detail = self.crawl_news_detail(news['url'])
             if detail and detail.get('content'):
                 news['content'] = detail['content']

@@ -13,8 +13,8 @@ import pytz
 from .database import NewsDatabase
 from .sentiment_analyzer import SentimentAnalyzer
 from .crawlers.naver_finance_crawler import NaverFinanceCrawler
-from .crawlers.krx_crawler import KRXCrawler
-from .crawlers.yonhap_crawler import YonhapCrawler
+# from .crawlers.krx_crawler import KRXCrawler  # 비활성화: 접근 불가
+# from .crawlers.yonhap_crawler import YonhapCrawler  # 비활성화: 접근 불가
 from .crawlers.hankyung_crawler import HankyungCrawler
 from .crawlers.mk_crawler import MKNewsCrawler
 
@@ -36,8 +36,8 @@ class NewsScheduler:
         # 크롤러 리스트
         self.crawlers = [
             NaverFinanceCrawler(),
-            KRXCrawler(),
-            YonhapCrawler(),
+            # KRXCrawler(),  # 비활성화: 접근 불가 (404 오류)
+            # YonhapCrawler(),  # 비활성화: 접근 불가 (400 오류)
             HankyungCrawler(),
             MKNewsCrawler()
         ]
@@ -84,15 +84,26 @@ class NewsScheduler:
                 news_list = crawler.crawl_news_list(max_pages=3)  # 각 크롤러당 최대 3페이지
                 
                 if news_list:
-                    # 감성 분석 및 점수 계산
+                    # 감성 분석 및 점수 계산 (모든 뉴스에 대해 강제 적용)
                     analyzed_news_list = []
                     for news in news_list:
                         try:
+                            # 제목이나 내용이 없어도 기본값으로 분석 시도
+                            if not news.get('title'):
+                                news['title'] = ''
+                            if not news.get('content'):
+                                news['content'] = ''
+                            
                             analyzed_news = self.sentiment_analyzer.analyze_news(news)
                             analyzed_news_list.append(analyzed_news)
                         except Exception as e:
                             logger.warning(f"[{crawler.source_name}] 감성 분석 오류: {e}")
-                            # 분석 실패해도 뉴스는 저장
+                            # 분석 실패 시 기본값 설정
+                            news['sentiment_score'] = 0.0
+                            news['importance_score'] = 0.0
+                            news['impact_score'] = 0.0
+                            news['timeliness_score'] = 0.5
+                            news['overall_score'] = 0.0
                             analyzed_news_list.append(news)
                     
                     # 데이터베이스에 저장
