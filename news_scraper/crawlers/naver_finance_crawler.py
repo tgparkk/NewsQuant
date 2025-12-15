@@ -101,63 +101,63 @@ class NaverFinanceCrawler(BaseCrawler):
                         # 여전히 제목이 없거나 짧으면 스킵
                         if not title or len(title) < 10:
                             continue
-                            
-                            # 부모 요소에서 날짜와 요약 찾기
-                            parent = link.parent
-                            date_str = ""
-                            summary = ""
-                            
-                            # 날짜 찾기 (부모 요소에서)
-                            for _ in range(3):  # 최대 3단계 상위 요소까지 검색
-                                if parent:
-                                    date_tag = parent.find(class_=re.compile(r'date|time|pub|reg')) or \
-                                              parent.find('time') or \
-                                              parent.find('span', class_=re.compile(r'date|time'))
-                                    if date_tag:
-                                        date_str = self.extract_text(date_tag)
-                                        if date_tag.get('datetime'):
-                                            date_str = date_tag.get('datetime')
-                                        break
-                                    
-                                    # 텍스트에서 날짜 패턴 찾기
-                                    parent_text = self.extract_text(parent)
-                                    date_match = re.search(r'\d{4}\.\d{2}\.\d{2}\s+\d{2}:\d{2}', parent_text)
-                                    if date_match:
-                                        date_str = date_match.group()
-                                        break
-                                    
-                                    parent = parent.parent if hasattr(parent, 'parent') else None
-                                else:
+                        
+                        # 부모 요소에서 날짜와 요약 찾기
+                        parent = link.parent
+                        date_str = ""
+                        summary = ""
+                        
+                        # 날짜 찾기 (부모 요소에서)
+                        for _ in range(3):  # 최대 3단계 상위 요소까지 검색
+                            if parent:
+                                date_tag = parent.find(class_=re.compile(r'date|time|pub|reg')) or \
+                                          parent.find('time') or \
+                                          parent.find('span', class_=re.compile(r'date|time'))
+                                if date_tag:
+                                    date_str = self.extract_text(date_tag)
+                                    if date_tag.get('datetime'):
+                                        date_str = date_tag.get('datetime')
                                     break
-                            
-                            # 요약 찾기 (부모 요소에서)
-                            parent = link.parent
-                            for _ in range(3):
-                                if parent:
-                                    summary_tag = parent.find(class_=re.compile(r'summary|desc|lead|preview|article'))
-                                    if summary_tag:
-                                        summary = self.extract_text(summary_tag)
-                                        if len(summary) > 20:  # 의미있는 요약만
-                                            break
-                                    parent = parent.parent if hasattr(parent, 'parent') else None
-                                else:
+                                
+                                # 텍스트에서 날짜 패턴 찾기
+                                parent_text = self.extract_text(parent)
+                                date_match = re.search(r'\d{4}\.\d{2}\.\d{2}\s+\d{2}:\d{2}', parent_text)
+                                if date_match:
+                                    date_str = date_match.group()
                                     break
-                            
-                            published_at = self.parse_date_string(date_str)
-                            
-                            news_data = {
-                                'news_id': self.generate_news_id(full_url, title),
-                                'title': title,
-                                'content': summary,
-                                'published_at': published_at,
-                                'source': self.source_name,
-                                'category': section['name'],
-                                'url': full_url,
-                                'related_stocks': self.extract_stock_codes(title + " " + summary),
-                                'sentiment_score': None
-                            }
-                            
-                            news_links.append(news_data)
+                                
+                                parent = parent.parent if hasattr(parent, 'parent') else None
+                            else:
+                                break
+                        
+                        # 요약 찾기 (부모 요소에서)
+                        parent = link.parent
+                        for _ in range(3):
+                            if parent:
+                                summary_tag = parent.find(class_=re.compile(r'summary|desc|lead|preview|article'))
+                                if summary_tag:
+                                    summary = self.extract_text(summary_tag)
+                                    if len(summary) > 20:  # 의미있는 요약만
+                                        break
+                                parent = parent.parent if hasattr(parent, 'parent') else None
+                            else:
+                                break
+                        
+                        published_at = self.parse_date_string(date_str)
+                        
+                        news_data = {
+                            'news_id': self.generate_news_id(full_url, title),
+                            'title': title,
+                            'content': summary,
+                            'published_at': published_at,
+                            'source': self.source_name,
+                            'category': section['name'],
+                            'url': full_url,
+                            'related_stocks': self.extract_stock_codes(title + " " + summary),
+                            'sentiment_score': None
+                        }
+                        
+                        news_links.append(news_data)
                     
                     # 중복 제거 (제목 기준)
                     unique_news = {}
