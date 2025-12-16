@@ -73,32 +73,33 @@ class NaverFinanceCrawler(BaseCrawler):
                             continue
                         seen_urls.add(full_url)
                         
-                        # 제목 추출
+                        # 제목 추출 - 링크 자체의 텍스트만 사용 (부모에서 찾지 않음)
                         title = self.extract_text(link)
                         
-                        # 제목이 너무 짧거나 없는 경우, 부모 요소에서 찾기
-                        if not title or len(title) < 10:
-                            # 부모 요소에서 제목 찾기
-                            parent = link.parent
-                            for _ in range(2):
-                                if parent:
-                                    # 부모의 텍스트에서 의미있는 제목 찾기
-                                    parent_text = self.extract_text(parent)
-                                    # 링크 텍스트가 아닌 다른 텍스트 찾기
-                                    if parent_text and len(parent_text) > len(title):
-                                        # 첫 번째 긴 텍스트를 제목으로 사용
-                                        lines = [line.strip() for line in parent_text.split('\n') if line.strip()]
-                                        for line in lines:
-                                            if len(line) >= 10 and line != title:
-                                                title = line
-                                                break
-                                    if len(title) >= 10:
-                                        break
-                                    parent = parent.parent if hasattr(parent, 'parent') else None
+                        # 제목 정리: 너무 긴 경우 잘라내기 (여러 뉴스가 합쳐진 경우 방지)
+                        if title:
+                            # 제목이 200자 이상이면 여러 뉴스가 합쳐진 것으로 간주
+                            if len(title) > 200:
+                                # 첫 번째 의미있는 부분만 사용
+                                lines = [line.strip() for line in title.split('\n') if line.strip() and len(line.strip()) >= 10]
+                                if lines:
+                                    title = lines[0]
                                 else:
-                                    break
+                                    # 줄바꿈이 없으면 첫 100자만 사용
+                                    title = title[:100].strip()
+                            
+                            # 특수 문자나 구분자로 여러 제목이 합쳐진 경우 처리
+                            # '|' 또는 '...' 또는 날짜 패턴으로 구분된 경우
+                            if '|' in title and len(title) > 100:
+                                # 첫 번째 '|' 이전만 사용
+                                title = title.split('|')[0].strip()
+                            
+                            # 날짜 패턴으로 구분된 경우 (예: "제목...2025-12-16 18:07")
+                            date_pattern = re.search(r'\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}', title)
+                            if date_pattern and date_pattern.start() > 0:
+                                title = title[:date_pattern.start()].strip()
                         
-                        # 여전히 제목이 없거나 짧으면 스킵
+                        # 제목이 너무 짧거나 없으면 스킵
                         if not title or len(title) < 10:
                             continue
                         
@@ -174,11 +175,25 @@ class NaverFinanceCrawler(BaseCrawler):
                     logger.error(f"[{self.source_name}] 페이지 {page} 크롤링 오류: {e}")
                     continue
         
-        # 상세 내용 크롤링 (최신 20개만)
-        for news in news_list[:20]:
-            detail = self.crawl_news_detail(news['url'])
-            if detail and detail.get('content'):
-                news['content'] = detail['content']
+        # 상세 내용 크롤링 (모든 뉴스에 대해 수행)
+        for news in news_list:
+            try:
+                detail = self.crawl_news_detail(news['url'])
+                if detail and detail.get('content'):
+                    news['content'] = detail['content']
+                    # 본문에서도 종목 코드 추출하여 기존 코드와 합치기
+                    content_codes = self.extract_stock_codes(detail['content'])
+                    existing_codes = news.get('related_stocks', '')
+                    if content_codes:
+                        if existing_codes:
+                            # 기존 코드와 합치기 (중복 제거)
+                            all_codes = set(existing_codes.split(',')) | set(content_codes.split(','))
+                            news['related_stocks'] = ','.join(sorted(all_codes))
+                        else:
+                            news['related_stocks'] = content_codes
+            except Exception as e:
+                logger.debug(f"[{self.source_name}] 상세 크롤링 오류: {news.get('url', '')} - {e}")
+                continue
         
         return news_list
     
@@ -193,16 +208,31 @@ class NaverFinanceCrawler(BaseCrawler):
             # 본문 추출 (다양한 선택자 시도)
             article_body = soup.find('div', class_='articleBody') or \
                           soup.find('div', id='newsEndContents') or \
+                          soup.find('div', id='articleBodyContents') or \
                           soup.find('div', class_=re.compile(r'article|content|body|text')) or \
                           soup.find('div', id=re.compile(r'article|content|body')) or \
                           soup.find('article')
             
             # 광고나 불필요한 요소 제거
             if article_body:
+                # 광고 관련 요소 제거
+                for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside', 'div', 'span'], 
+                                                  class_=re.compile(r'ad|advertisement|banner|sponsor|promotion')):
+                    tag.decompose()
+                # 일반적인 불필요 요소 제거
                 for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside']):
                     tag.decompose()
             
             content = self.extract_text(article_body) if article_body else ""
+            
+            # 내용이 너무 짧으면 다른 선택자 시도
+            if len(content) < 100:
+                # 다른 패턴 시도
+                article_body = soup.find('div', class_=re.compile(r'news_end_body|article_view|article_body'))
+                if article_body:
+                    for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside']):
+                        tag.decompose()
+                    content = self.extract_text(article_body)
             
             # 날짜 정보 재확인
             date_tag = soup.find('span', class_='tah') or \
@@ -256,8 +286,7 @@ class NaverFinanceCrawler(BaseCrawler):
         return datetime.now().isoformat()
     
     def extract_stock_codes(self, text: str) -> str:
-        """텍스트에서 종목 코드 추출 (6자리 숫자)"""
-        # 6자리 숫자 패턴 (종목 코드로 추정)
-        codes = re.findall(r'\b\d{6}\b', text)
-        return ','.join(set(codes))  # 중복 제거
+        """텍스트에서 종목 코드 추출 (부모 클래스의 개선된 로직 사용)"""
+        # 부모 클래스의 extract_stock_codes 사용 (종목명 매핑 포함)
+        return super().extract_stock_codes(text)
 

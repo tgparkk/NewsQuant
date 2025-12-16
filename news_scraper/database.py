@@ -31,6 +31,9 @@ class NewsDatabase:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")  # 성능 최적화
         
+        # 인코딩 명시적 설정
+        conn.execute("PRAGMA encoding='UTF-8'")
+        
         conn.row_factory = sqlite3.Row  # 딕셔너리 형태로 결과 반환
         return conn
     
@@ -145,6 +148,28 @@ class NewsDatabase:
         cursor = conn.cursor()
         
         try:
+            # 문자열 데이터 정리 및 인코딩 보장
+            def ensure_utf8(text):
+                """문자열이 올바른 UTF-8인지 확인하고 정리"""
+                if not text:
+                    return text
+                if isinstance(text, bytes):
+                    # 바이트인 경우 UTF-8로 디코딩 시도
+                    try:
+                        text = text.decode('utf-8', errors='replace')
+                    except:
+                        text = text.decode('utf-8', errors='ignore')
+                # replacement character 제거
+                if '\ufffd' in text:
+                    # 깨진 문자 제거
+                    text = text.replace('\ufffd', '')
+                return text
+            
+            title = ensure_utf8(news_data.get('title'))
+            content = ensure_utf8(news_data.get('content', ''))
+            category = ensure_utf8(news_data.get('category', ''))
+            related_stocks = ensure_utf8(news_data.get('related_stocks', ''))
+            
             cursor.execute("""
                 INSERT OR REPLACE INTO news 
                 (news_id, title, content, published_at, source, category, 
@@ -153,13 +178,13 @@ class NewsDatabase:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 news_data.get('news_id'),
-                news_data.get('title'),
-                news_data.get('content', ''),
+                title,
+                content,
                 news_data.get('published_at'),
                 news_data.get('source'),
-                news_data.get('category', ''),
+                category,
                 news_data.get('url'),
-                news_data.get('related_stocks', ''),
+                related_stocks,
                 news_data.get('sentiment_score'),
                 news_data.get('importance_score'),
                 news_data.get('impact_score'),

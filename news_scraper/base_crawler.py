@@ -82,6 +82,57 @@ STOCK_NAME_TO_CODE = {
     '대한항공': '003490', '아시아나항공': '020560', '제주항공': '089590',
     # 기타
     '한국전력': '015760', '한국가스공사': '036460', 'KT&G': '033780',
+    # 추가 종목명 (더 많은 변형 포함)
+    '카카오모빌리티': '162025', '카모': '162025', '카카오모빌': '162025',
+    '현대오토에버': '307950', '오토에버': '307950',
+    '배달의민족': '035720', '우아한형제들': '035720',
+    '토스': '302550', '비바리퍼블리카': '302550',
+    '쿠팡': 'CPNG', '쿠팡이츠': 'CPNG',
+    '네이버파이낸셜': '035420', '네이버페이': '035420',
+    '카카오페이': '377300', '카카오뱅크': '323410',
+    '한화에너지': '162025', '한화에너지파워': '162025',
+    'LG에너지솔루션': '373220', 'LGES': '373220',
+    'SK하이닉스': '000660', '하이닉스': '000660',
+    '삼성전자': '005930', '삼전': '005930',
+    'NAVER': '035420', '네이버': '035420',
+    '카카오': '035720', '카톡': '035720',
+    '현대차': '005380', '현대자동차': '005380',
+    '기아': '000270', '기아자동차': '000270',
+    '포스코': '005490', 'POSCO': '005490',
+    'LG화학': '051910', 'LG Chem': '051910',
+    '셀트리온': '068270', '셀트리온제약': '068270',
+    'SK이노베이션': '096770', 'SK인노베이션': '096770',
+    '한화솔루션': '009830', '한화케미칼': '009830',
+    'LG전자': '066570', 'LG': '066570',
+    '삼성SDI': '006400', 'SDI': '006400',
+    '아모레퍼시픽': '090430', '아모레': '090430',
+    'LG생활건강': '051900', '생활건강': '051900',
+    'CJ제일제당': '097950', 'CJ': '097950',
+    '롯데': '004990', '롯데지주': '004990',
+    '신세계': '004170', '신세계백화점': '004170',
+    '이마트': '139480', '이마트몰': '139480',
+    'GS리테일': '007070', 'GS': '007070',
+    '현대중공업': '009540', '현대중공업지주': '009540',
+    '두산에너빌리티': '034020', '두산': '034020',
+    '한화에어로스페이스': '012450', '한화항공우주': '012450',
+    '대한항공': '003490', '대한항': '003490',
+    '아시아나항공': '020560', '아시아나': '020560',
+    '제주항공': '089590', '제주항': '089590',
+    '삼성바이오로직스': '207940', '삼성바이오': '207940',
+    '셀트리온헬스케어': '091990', '셀트리온헬스': '091990',
+    '유한양행': '000100', '유한': '000100',
+    '대웅제약': '069620', '대웅': '069620',
+    '녹십자': '006280', 'GC녹십자': '006280',
+    '넷마블': '251270', '넷마블엔터테인먼트': '251270',
+    '엔씨소프트': '036570', 'NC소프트': '036570',
+    '크래프톤': '259960', '크래프톤게임즈': '259960',
+    '신한지주': '055550', '신한금융지주': '055550',
+    'KB금융': '105560', 'KB금융지주': '105560',
+    '하나금융지주': '086790', '하나금융': '086790',
+    '우리금융지주': '316140', '우리금융': '316140',
+    'NH투자증권': '005940', 'NH투자': '005940',
+    '미래에셋증권': '006800', '미래에셋': '006800',
+    '한국금융지주': '071050', '한국금융': '071050',
 }
 
 
@@ -133,8 +184,71 @@ class BaseCrawler(ABC):
             try:
                 response = self.session.get(url, timeout=10)
                 response.raise_for_status()
-                response.encoding = 'utf-8'
-                return BeautifulSoup(response.text, 'lxml')
+                
+                # HTML에서 charset 메타 태그 확인
+                html_content_raw = response.content
+                charset = None
+                
+                # 먼저 HTML의 charset 메타 태그 확인
+                try:
+                    # 임시로 UTF-8로 디코딩하여 charset 확인
+                    temp_html = html_content_raw.decode('utf-8', errors='ignore')
+                    if 'charset' in temp_html.lower():
+                        import re
+                        charset_match = re.search(r'charset\s*=\s*["\']?([^"\'\s>]+)', temp_html, re.IGNORECASE)
+                        if charset_match:
+                            charset = charset_match.group(1).lower()
+                except:
+                    pass
+                
+                # 네이버 금융의 경우 명시적으로 UTF-8 처리
+                if 'naver.com' in url or 'finance.naver.com' in url:
+                    if not charset:
+                        charset = 'utf-8'
+                    response.encoding = 'utf-8'
+                else:
+                    # 인코딩 자동 감지 및 설정
+                    if charset:
+                        response.encoding = charset
+                    elif response.encoding is None or response.encoding.lower() == 'iso-8859-1':
+                        # Content-Type 헤더에서 인코딩 추출 시도
+                        try:
+                            import chardet
+                            detected = chardet.detect(response.content)
+                            if detected and detected.get('encoding'):
+                                response.encoding = detected['encoding']
+                            else:
+                                response.encoding = 'utf-8'
+                        except ImportError:
+                            # chardet이 없으면 utf-8 사용
+                            response.encoding = 'utf-8'
+                
+                # response.content를 직접 디코딩하여 처리
+                # 여러 인코딩 시도
+                html_content = None
+                encodings_to_try = ['utf-8', 'euc-kr', 'cp949', 'latin1']
+                
+                if charset and charset not in encodings_to_try:
+                    encodings_to_try.insert(0, charset)
+                
+                for encoding in encodings_to_try:
+                    try:
+                        html_content = html_content_raw.decode(encoding, errors='strict')
+                        # 한글이 제대로 디코딩되었는지 확인
+                        if any('\uac00' <= char <= '\ud7a3' for char in html_content[:1000]):
+                            # 한글이 있으면 성공
+                            break
+                        elif encoding == 'utf-8':
+                            # UTF-8인데 한글이 없어도 일단 사용 (영문 페이지일 수 있음)
+                            break
+                    except (UnicodeDecodeError, UnicodeError):
+                        continue
+                
+                # 모든 인코딩 실패 시 errors='replace'로 처리
+                if html_content is None:
+                    html_content = html_content_raw.decode('utf-8', errors='replace')
+                
+                return BeautifulSoup(html_content, 'lxml')
             except requests.exceptions.RequestException as e:
                 logger.warning(f"[{self.source_name}] 페이지 가져오기 실패 (시도 {attempt+1}/{retries}): {e}")
                 if attempt < retries - 1:
@@ -196,7 +310,21 @@ class BaseCrawler(ABC):
         """
         if element is None:
             return ""
-        return element.get_text(strip=True).replace('\xa0', ' ')
+        
+        try:
+            text = element.get_text(strip=True, separator=' ')
+            # 인코딩 문제가 있는 경우 정리
+            if text:
+                # 잘못된 바이트 시퀀스 제거
+                text = text.replace('\xa0', ' ')
+                # replacement character 제거
+                text = text.replace('\ufffd', '')
+                # 연속된 공백 정리
+                text = ' '.join(text.split())
+            return text
+        except Exception as e:
+            logger.debug(f"텍스트 추출 오류: {e}")
+            return ""
     
     def extract_stock_codes(self, text: str) -> str:
         """
@@ -212,26 +340,32 @@ class BaseCrawler(ABC):
             return ""
         
         codes = set()
-        
-        # 1. 6자리 숫자 패턴으로 직접 추출
         import re
-        numeric_codes = re.findall(r'\b\d{6}\b', text)
-        # 유효한 종목 코드 범위 체크 (000001~999999 중 실제 존재하는 범위)
-        valid_codes = [code for code in numeric_codes if code.startswith(('0', '1', '2', '3', '4', '5', '6'))]
-        codes.update(valid_codes)
+        
+        # 1. 괄호 안의 종목명 추출 (예: "삼성전자(005930)") - 가장 정확
+        bracket_pattern = r'\((\d{6})\)'
+        bracket_codes = re.findall(bracket_pattern, text)
+        codes.update(bracket_codes)
         
         # 2. 종목명으로 추출 (긴 이름부터 매칭하여 정확도 향상)
         sorted_stocks = sorted(STOCK_NAME_TO_CODE.items(), key=lambda x: len(x[0]), reverse=True)
         for stock_name, stock_code in sorted_stocks:
             # 단어 경계를 고려한 매칭 (부분 단어 오매칭 방지)
-            pattern = r'\b' + re.escape(stock_name) + r'\b'
-            if re.search(pattern, text):
-                codes.add(stock_code)
+            # 한글 종목명의 경우 더 유연한 매칭
+            if len(stock_name) >= 2:  # 최소 2글자 이상인 종목명만
+                pattern = r'\b' + re.escape(stock_name) + r'\b'
+                if re.search(pattern, text):
+                    codes.add(stock_code)
         
-        # 3. 괄호 안의 종목명 추출 (예: "삼성전자(005930)")
-        bracket_pattern = r'\((\d{6})\)'
-        bracket_codes = re.findall(bracket_pattern, text)
-        codes.update(bracket_codes)
+        # 3. 6자리 숫자 패턴으로 직접 추출 (종목명 매칭 후 남은 부분에서만)
+        # 이미 종목명으로 찾은 코드는 제외하고, 남은 텍스트에서 숫자 코드 찾기
+        numeric_codes = re.findall(r'\b\d{6}\b', text)
+        # 유효한 종목 코드 범위 체크 (000001~999999 중 실제 존재하는 범위)
+        # 0, 1, 2, 3, 4, 5, 6으로 시작하는 코드만 (한국 주식 시장 특성)
+        valid_codes = [code for code in numeric_codes 
+                      if code.startswith(('0', '1', '2', '3', '4', '5', '6')) 
+                      and len(code) == 6]
+        codes.update(valid_codes)
         
         return ','.join(sorted(codes))
     

@@ -89,6 +89,7 @@ class HankyungCrawler(BaseCrawler):
                             summary = self.extract_text(summary_tag) if summary_tag else ""
                             
                             # 제목과 요약에서 주식 코드 추출 (초기 추출)
+                            # 종목명 매핑을 활용한 정확한 추출
                             text_for_extraction = f"{title} {summary}"
                             related_stocks = self.extract_stock_codes(text_for_extraction)
                             
@@ -142,20 +143,35 @@ class HankyungCrawler(BaseCrawler):
             return None
         
         try:
-            # 본문 추출
-            article_body = soup.find('div', class_=re.compile(r'article|content|body|text'))
-            if not article_body:
-                article_body = soup.find('div', id=re.compile(r'article|content|body'))
-            
-            if not article_body:
-                article_body = soup.find('article')
+            # 본문 추출 (다양한 선택자 시도)
+            article_body = soup.find('div', class_=re.compile(r'article.*body|article.*content|article.*text')) or \
+                          soup.find('div', id=re.compile(r'article.*body|article.*content')) or \
+                          soup.find('div', class_=re.compile(r'article|content|body|text')) or \
+                          soup.find('div', id=re.compile(r'article|content|body')) or \
+                          soup.find('article') or \
+                          soup.find('div', class_='article-body') or \
+                          soup.find('div', id='article-body')
             
             # 광고나 불필요한 요소 제거
             if article_body:
-                for tag in article_body.find_all(['script', 'style', 'iframe', 'ins']):
+                # 광고 관련 요소 제거
+                for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside', 'div', 'span'], 
+                                                  class_=re.compile(r'ad|advertisement|banner|sponsor|promotion|related|recommend')):
+                    tag.decompose()
+                # 일반적인 불필요 요소 제거
+                for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside']):
                     tag.decompose()
             
             content = self.extract_text(article_body) if article_body else ""
+            
+            # 내용이 너무 짧으면 다른 선택자 시도
+            if len(content) < 100:
+                # 다른 패턴 시도
+                article_body = soup.find('div', class_=re.compile(r'news_body|article_view|article_content'))
+                if article_body:
+                    for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside']):
+                        tag.decompose()
+                    content = self.extract_text(article_body)
             
             # 날짜 정보 재확인
             date_tag = soup.find('time') or soup.find(class_=re.compile(r'date|time|published'))
