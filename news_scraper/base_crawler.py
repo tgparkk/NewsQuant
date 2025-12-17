@@ -342,30 +342,70 @@ class BaseCrawler(ABC):
         codes = set()
         import re
         
-        # 1. 괄호 안의 종목명 추출 (예: "삼성전자(005930)") - 가장 정확
-        bracket_pattern = r'\((\d{6})\)'
-        bracket_codes = re.findall(bracket_pattern, text)
-        codes.update(bracket_codes)
+        # 1. 괄호 안의 종목 코드 추출 (예: "삼성전자(005930)", "(005930)") - 가장 정확
+        bracket_patterns = [
+            r'\((\d{6})\)',  # (005930)
+            r'[（(](\d{6})[）)]',  # 전각/반각 괄호 모두
+        ]
+        for pattern in bracket_patterns:
+            bracket_codes = re.findall(pattern, text)
+            codes.update(bracket_codes)
         
-        # 2. 종목명으로 추출 (긴 이름부터 매칭하여 정확도 향상)
+        # 2. 종목명과 코드가 함께 나오는 패턴 (예: "삼성전자 005930", "005930 삼성전자")
+        # 종목명과 6자리 숫자가 인접한 경우
         sorted_stocks = sorted(STOCK_NAME_TO_CODE.items(), key=lambda x: len(x[0]), reverse=True)
         for stock_name, stock_code in sorted_stocks:
-            # 단어 경계를 고려한 매칭 (부분 단어 오매칭 방지)
-            # 한글 종목명의 경우 더 유연한 매칭
-            if len(stock_name) >= 2:  # 최소 2글자 이상인 종목명만
-                pattern = r'\b' + re.escape(stock_name) + r'\b'
-                if re.search(pattern, text):
-                    codes.add(stock_code)
+            if len(stock_name) >= 2:
+                # 패턴 1: "종목명 005930" 또는 "종목명(005930)"
+                pattern1 = re.escape(stock_name) + r'[\(\s]*(\d{6})[\)\s]*'
+                matches = re.findall(pattern1, text)
+                if matches:
+                    codes.update(matches)
+                
+                # 패턴 2: "005930 종목명"
+                pattern2 = r'(\d{6})[\(\s]*' + re.escape(stock_name)
+                matches = re.findall(pattern2, text)
+                if matches:
+                    codes.update(matches)
         
-        # 3. 6자리 숫자 패턴으로 직접 추출 (종목명 매칭 후 남은 부분에서만)
-        # 이미 종목명으로 찾은 코드는 제외하고, 남은 텍스트에서 숫자 코드 찾기
-        numeric_codes = re.findall(r'\b\d{6}\b', text)
-        # 유효한 종목 코드 범위 체크 (000001~999999 중 실제 존재하는 범위)
-        # 0, 1, 2, 3, 4, 5, 6으로 시작하는 코드만 (한국 주식 시장 특성)
+        # 3. 종목명으로 추출 (긴 이름부터 매칭하여 정확도 향상)
+        for stock_name, stock_code in sorted_stocks:
+            # 단어 경계를 고려한 매칭 (부분 단어 오매칭 방지)
+            if len(stock_name) >= 2:
+                # 한글 종목명의 경우 더 유연한 매칭
+                # 제목이나 요약에서는 단어 경계가 덜 엄격할 수 있음
+                patterns = [
+                    r'\b' + re.escape(stock_name) + r'\b',  # 단어 경계
+                    r'\s+' + re.escape(stock_name) + r'[\s,\.]',  # 앞뒤 공백/구두점
+                    r'[' + re.escape(stock_name) + r']',  # 단독 언급
+                ]
+                for pattern in patterns:
+                    if re.search(pattern, text):
+                        codes.add(stock_code)
+                        break  # 한 번 매칭되면 다음 종목으로
+        
+        # 4. 6자리 숫자 패턴으로 직접 추출
+        # 종목 코드는 보통 0~6으로 시작 (한국 주식 시장 특성)
+        numeric_codes = re.findall(r'\b(\d{6})\b', text)
+        # 유효한 종목 코드 범위 체크
         valid_codes = [code for code in numeric_codes 
                       if code.startswith(('0', '1', '2', '3', '4', '5', '6')) 
-                      and len(code) == 6]
+                      and len(code) == 6
+                      and not code.startswith('000000')]  # 000000은 유효하지 않음
         codes.update(valid_codes)
+        
+        # 5. 특수 케이스: 종목명이 제목에 명시적으로 언급된 경우
+        # 제목에서 종목명이 언급되면 해당 종목 코드 추가
+        # (이미 위에서 처리되지만, 더 명확한 패턴 추가)
+        title_keywords = ['주가', '주식', '증권', '종목', '기업', '회사']
+        for stock_name, stock_code in sorted_stocks:
+            if len(stock_name) >= 2:
+                # 종목명 + 키워드 패턴 (예: "삼성전자 주가", "삼성전자 종목")
+                for keyword in title_keywords:
+                    pattern = re.escape(stock_name) + r'[\s]*' + keyword
+                    if re.search(pattern, text, re.IGNORECASE):
+                        codes.add(stock_code)
+                        break
         
         return ','.join(sorted(codes))
     

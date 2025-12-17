@@ -124,29 +124,70 @@ class MKNewsCrawler(BaseCrawler):
             return None
         
         try:
-            # 본문 추출
-            article_body = soup.find('div', class_=re.compile(r'article|content|body|text|news_body')) or \
-                          soup.find('div', id=re.compile(r'article|content|body')) or \
-                          soup.find('article') or \
-                          soup.find('div', class_='news_cnt_detail_wrap')
+            content = ""
+            article_body = None
             
-            # 광고나 불필요한 요소 제거
-            if article_body:
-                for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside']):
-                    tag.decompose()
+            # 매일경제 본문 추출 - 다양한 선택자 순차 시도
+            selectors = [
+                # 1순위: 매일경제 특정 클래스
+                lambda s: s.find('div', class_='news_cnt_detail_wrap'),
+                lambda s: s.find('div', class_=re.compile(r'article|content|body|text|news_body', re.I)),
+                lambda s: s.find('div', id=re.compile(r'article|content|body', re.I)),
+                # 2순위: 일반적인 본문 패턴
+                lambda s: s.find('article', class_=re.compile(r'article|content|body', re.I)),
+                lambda s: s.find('article'),
+                lambda s: s.find('div', class_=re.compile(r'news.*content|news.*body', re.I)),
+                # 3순위: 더 넓은 패턴
+                lambda s: s.find('div', class_=re.compile(r'content|body|text', re.I)),
+                lambda s: s.find('div', id=re.compile(r'content|body', re.I)),
+            ]
             
-            content = self.extract_text(article_body) if article_body else ""
+            # 각 선택자 시도
+            for selector in selectors:
+                try:
+                    article_body = selector(soup)
+                    if article_body:
+                        # 광고나 불필요한 요소 제거
+                        for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside', 'div', 'span'], 
+                                                          class_=re.compile(r'ad|advertisement|banner|sponsor|promotion|related|recommend', re.I)):
+                            tag.decompose()
+                        for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside']):
+                            tag.decompose()
+                        
+                        # 본문 텍스트 추출
+                        content = self.extract_text(article_body)
+                        
+                        # 내용이 충분히 길면 성공으로 간주
+                        if len(content) >= 100:
+                            break
+                except Exception as e:
+                    logger.debug(f"[{self.source_name}] 선택자 시도 오류: {e}")
+                    continue
+            
+            # 여전히 내용이 짧으면 추가 시도
+            if len(content) < 100:
+                main_content = soup.find('main') or soup.find('div', class_=re.compile(r'main|container', re.I))
+                if main_content:
+                    for tag in main_content.find_all(['script', 'style', 'iframe', 'ins', 'aside', 'header', 'footer', 'nav']):
+                        tag.decompose()
+                    temp_content = self.extract_text(main_content)
+                    if len(temp_content) > len(content):
+                        content = temp_content
             
             # 날짜 정보 재확인
             date_tag = soup.find('time') or \
-                      soup.find(class_=re.compile(r'date|time|published|reg_time')) or \
-                      soup.find('span', class_=re.compile(r'date|time'))
+                      soup.find(class_=re.compile(r'date|time|published|reg_time', re.I)) or \
+                      soup.find('span', class_=re.compile(r'date|time', re.I))
             
             date_str = self.extract_text(date_tag) if date_tag else ""
             if date_tag and date_tag.get('datetime'):
                 date_str = date_tag.get('datetime')
             
             published_at = self.parse_date_string(date_str)
+            
+            # 내용이 없거나 너무 짧으면 로깅
+            if len(content) < 50:
+                logger.debug(f"[{self.source_name}] 본문 추출 실패 또는 내용 부족: {url} (길이: {len(content)})")
             
             return {
                 'content': content,

@@ -205,46 +205,84 @@ class NaverFinanceCrawler(BaseCrawler):
             return None
         
         try:
-            # 본문 추출 (다양한 선택자 시도)
-            article_body = soup.find('div', class_='articleBody') or \
-                          soup.find('div', id='newsEndContents') or \
-                          soup.find('div', id='articleBodyContents') or \
-                          soup.find('div', class_=re.compile(r'article|content|body|text')) or \
-                          soup.find('div', id=re.compile(r'article|content|body')) or \
-                          soup.find('article')
+            content = ""
+            article_body = None
             
-            # 광고나 불필요한 요소 제거
-            if article_body:
-                # 광고 관련 요소 제거
-                for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside', 'div', 'span'], 
-                                                  class_=re.compile(r'ad|advertisement|banner|sponsor|promotion')):
-                    tag.decompose()
-                # 일반적인 불필요 요소 제거
-                for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside']):
-                    tag.decompose()
+            # 네이버 금융 본문 추출 - 다양한 선택자 순차 시도
+            selectors = [
+                # 1순위: 네이버 금융 특정 ID/클래스
+                lambda s: s.find('div', id='articleBodyContents'),
+                lambda s: s.find('div', id='newsEndContents'),
+                lambda s: s.find('div', class_='articleBody'),
+                lambda s: s.find('div', id='articleBody'),
+                # 2순위: 일반적인 본문 패턴
+                lambda s: s.find('div', class_=re.compile(r'article.*body|article.*content', re.I)),
+                lambda s: s.find('div', id=re.compile(r'article.*body|article.*content', re.I)),
+                lambda s: s.find('article', class_=re.compile(r'article|content|body', re.I)),
+                lambda s: s.find('article'),
+                # 3순위: 더 넓은 패턴
+                lambda s: s.find('div', class_=re.compile(r'content|body|text|article', re.I)),
+                lambda s: s.find('div', id=re.compile(r'content|body|article', re.I)),
+                # 4순위: 네이버 특정 클래스
+                lambda s: s.find('div', class_=re.compile(r'news_end_body|article_view|article_body', re.I)),
+                lambda s: s.find('div', class_='_article_body_contents'),
+                lambda s: s.find('div', class_='go_trans _article_content'),
+            ]
             
-            content = self.extract_text(article_body) if article_body else ""
+            # 각 선택자 시도
+            for selector in selectors:
+                try:
+                    article_body = selector(soup)
+                    if article_body:
+                        # 광고나 불필요한 요소 제거
+                        for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside', 'div', 'span'], 
+                                                          class_=re.compile(r'ad|advertisement|banner|sponsor|promotion|related|recommend|news_end_btn', re.I)):
+                            tag.decompose()
+                        for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside', 'div'], 
+                                                          id=re.compile(r'ad|advertisement|banner|sponsor|promotion', re.I)):
+                            tag.decompose()
+                        # 일반적인 불필요 요소 제거
+                        for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside']):
+                            tag.decompose()
+                        
+                        # 본문 텍스트 추출
+                        content = self.extract_text(article_body)
+                        
+                        # 내용이 충분히 길면 성공으로 간주
+                        if len(content) >= 100:
+                            break
+                except Exception as e:
+                    logger.debug(f"[{self.source_name}] 선택자 시도 오류: {e}")
+                    continue
             
-            # 내용이 너무 짧으면 다른 선택자 시도
+            # 여전히 내용이 짧으면 추가 시도
             if len(content) < 100:
-                # 다른 패턴 시도
-                article_body = soup.find('div', class_=re.compile(r'news_end_body|article_view|article_body'))
-                if article_body:
-                    for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside']):
+                # 본문 영역을 더 넓게 찾기
+                main_content = soup.find('main') or soup.find('div', class_=re.compile(r'main|container', re.I))
+                if main_content:
+                    # 본문 관련 요소만 추출
+                    for tag in main_content.find_all(['script', 'style', 'iframe', 'ins', 'aside', 'header', 'footer', 'nav']):
                         tag.decompose()
-                    content = self.extract_text(article_body)
+                    temp_content = self.extract_text(main_content)
+                    if len(temp_content) > len(content):
+                        content = temp_content
             
             # 날짜 정보 재확인
             date_tag = soup.find('span', class_='tah') or \
                       soup.find('div', class_='article_info') or \
+                      soup.find('div', class_=re.compile(r'article.*info|news.*info', re.I)) or \
                       soup.find('time') or \
-                      soup.find(class_=re.compile(r'date|time|published'))
+                      soup.find(class_=re.compile(r'date|time|published', re.I))
             
             date_str = self.extract_text(date_tag) if date_tag else ""
             if date_tag and date_tag.get('datetime'):
                 date_str = date_tag.get('datetime')
             
             published_at = self.parse_date_string(date_str)
+            
+            # 내용이 없거나 너무 짧으면 로깅
+            if len(content) < 50:
+                logger.debug(f"[{self.source_name}] 본문 추출 실패 또는 내용 부족: {url} (길이: {len(content)})")
             
             return {
                 'content': content,
