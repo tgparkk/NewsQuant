@@ -179,10 +179,24 @@ class NaverFinanceCrawler(BaseCrawler):
         for news in news_list:
             try:
                 detail = self.crawl_news_detail(news['url'])
-                if detail and detail.get('content'):
-                    news['content'] = detail['content']
+                summary = news.get('content') or ""
+
+                if detail:
+                    content = detail.get('content') or ""
+                    merged = (content + " " + summary).strip()
+
+                    # 본문/요약/병합본 중 의미 있는 텍스트를 우선순위에 따라 선택
+                    if len(content) >= 10:
+                        news['content'] = content
+                    elif len(merged) >= 10:
+                        news['content'] = merged
+                    elif len(summary) >= 10:
+                        news['content'] = summary
+                    else:
+                        news['content'] = content or summary
+
                     # 본문에서도 종목 코드 추출하여 기존 코드와 합치기
-                    content_codes = self.extract_stock_codes(detail['content'])
+                    content_codes = self.extract_stock_codes(content)
                     existing_codes = news.get('related_stocks', '')
                     if content_codes:
                         if existing_codes:
@@ -191,6 +205,12 @@ class NaverFinanceCrawler(BaseCrawler):
                             news['related_stocks'] = ','.join(sorted(all_codes))
                         else:
                             news['related_stocks'] = content_codes
+                else:
+                    # 상세 페이지 크롤링 실패 시에도 요약이 충분히 길면 사용
+                    if len(summary) >= 10:
+                        news['content'] = summary
+                    else:
+                        news['content'] = summary or ""
             except Exception as e:
                 logger.debug(f"[{self.source_name}] 상세 크롤링 오류: {news.get('url', '')} - {e}")
                 continue
@@ -249,14 +269,15 @@ class NaverFinanceCrawler(BaseCrawler):
                         content = self.extract_text(article_body)
                         
                         # 내용이 충분히 길면 성공으로 간주
-                        if len(content) >= 100:
+                        # 기준을 완화하여 더 많은 본문을 수집
+                        if len(content) >= 20:
                             break
                 except Exception as e:
                     logger.debug(f"[{self.source_name}] 선택자 시도 오류: {e}")
                     continue
             
             # 여전히 내용이 짧으면 추가 시도
-            if len(content) < 100:
+            if len(content) < 20:
                 # 본문 영역을 더 넓게 찾기
                 main_content = soup.find('main') or soup.find('div', class_=re.compile(r'main|container', re.I))
                 if main_content:
