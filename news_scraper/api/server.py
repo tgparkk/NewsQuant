@@ -14,6 +14,7 @@ import uvicorn
 from threading import Thread
 
 from ..database import NewsDatabase
+from ..trading_analyzer import TradingAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,9 @@ app.add_middleware(
 
 # 데이터베이스 인스턴스
 db = NewsDatabase()
+
+# 매매 분석기 인스턴스
+trading_analyzer = TradingAnalyzer()
 
 
 # 요청 모델
@@ -320,6 +324,234 @@ async def get_statistics(
         })
     except Exception as e:
         logger.error(f"Error fetching statistics: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== 매매 판단 API ====================
+
+@app.get("/api/trading/analysis/today")
+async def get_today_trading_analysis():
+    """
+    오늘자 뉴스 기반 종목 분석 결과 조회
+    
+    매수/매도 후보 종목 및 전체 종목 통계를 반환합니다.
+    """
+    try:
+        analysis = trading_analyzer.analyze_today_stocks()
+        
+        return JSONResponse({
+            "success": True,
+            "data": analysis
+        })
+    except Exception as e:
+        logger.error(f"Error analyzing today stocks: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/trading/signal/{stock_code}")
+async def get_stock_trading_signal(
+    stock_code: str,
+    days: int = Query(1, ge=1, le=30, description="분석할 일수 (기본값: 1, 오늘만)")
+):
+    """
+    특정 종목의 매매 신호 조회
+    
+    - **stock_code**: 종목 코드 (6자리, 예: 005930)
+    - **days**: 분석할 일수 (1-30, 기본값: 1)
+    
+    반환값:
+    - signal: "buy", "sell", "hold"
+    - confidence: 신호 신뢰도 (0.0 ~ 1.0)
+    - reason: 신호 이유
+    """
+    try:
+        # 종목 코드 검증
+        if not stock_code.isdigit() or len(stock_code) != 6:
+            raise HTTPException(
+                status_code=400,
+                detail="종목 코드는 6자리 숫자여야 합니다. 예: 005930"
+            )
+        
+        signal = trading_analyzer.get_stock_signal(stock_code, days=days)
+        
+        return JSONResponse({
+            "success": True,
+            "data": signal
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting trading signal: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/trading/signals/batch")
+async def get_trading_signals_batch(
+    stock_codes: List[str] = Body(..., description="종목 코드 리스트"),
+    days: int = Body(1, ge=1, le=30, description="분석할 일수")
+):
+    """
+    여러 종목의 매매 신호를 한 번에 조회 (배치 조회)
+    
+    - **stock_codes**: 종목 코드 리스트 (예: ["005930", "000660"])
+    - **days**: 분석할 일수 (1-30, 기본값: 1)
+    """
+    try:
+        # 종목 코드 검증
+        invalid_codes = [
+            code for code in stock_codes
+            if not code.isdigit() or len(code) != 6
+        ]
+        
+        if invalid_codes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"잘못된 종목 코드: {invalid_codes}. 종목 코드는 6자리 숫자여야 합니다."
+            )
+        
+        # 종목 수 제한
+        if len(stock_codes) > 100:
+            raise HTTPException(
+                status_code=400,
+                detail="한 번에 조회할 수 있는 종목 수는 최대 100개입니다."
+            )
+        
+        # 각 종목의 신호 조회
+        results = {}
+        for stock_code in stock_codes:
+            try:
+                signal = trading_analyzer.get_stock_signal(stock_code, days=days)
+                results[stock_code] = signal
+            except Exception as e:
+                logger.warning(f"Error getting signal for {stock_code}: {e}")
+                results[stock_code] = {
+                    'stock_code': stock_code,
+                    'signal': 'hold',
+                    'confidence': 0.0,
+                    'error': str(e)
+                }
+        
+        return JSONResponse({
+            "success": True,
+            "days": days,
+            "count": len(results),
+            "results": results
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting trading signals batch: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/trading/stock/{stock_code}/analysis")
+async def get_stock_detailed_analysis(
+    stock_code: str,
+    days: int = Query(7, ge=1, le=30, description="분석할 일수 (기본값: 7)")
+):
+    """
+    종목별 상세 분석 조회
+    
+    - **stock_code**: 종목 코드 (6자리, 예: 005930)
+    - **days**: 분석할 일수 (1-30, 기본값: 7)
+    
+    반환값:
+    - 통계 정보 (평균 감성, 종합 점수 등)
+    - 최신 뉴스 목록
+    - 매매 신호
+    """
+    try:
+        # 종목 코드 검증
+        if not stock_code.isdigit() or len(stock_code) != 6:
+            raise HTTPException(
+                status_code=400,
+                detail="종목 코드는 6자리 숫자여야 합니다. 예: 005930"
+            )
+        
+        analysis = trading_analyzer.get_stock_analysis(stock_code, days=days)
+        
+        return JSONResponse({
+            "success": True,
+            "data": analysis
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting stock analysis: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/trading/buy-candidates")
+async def get_buy_candidates(
+    min_confidence: float = Query(0.5, ge=0.0, le=1.0, description="최소 신뢰도"),
+    limit: int = Query(20, ge=1, le=100, description="조회 개수")
+):
+    """
+    매수 후보 종목 조회
+    
+    - **min_confidence**: 최소 신뢰도 (0.0 ~ 1.0, 기본값: 0.5)
+    - **limit**: 조회 개수 (1-100, 기본값: 20)
+    """
+    try:
+        analysis = trading_analyzer.analyze_today_stocks()
+        buy_candidates = analysis.get('buy_candidates', [])
+        
+        # 신뢰도 필터링 및 제한
+        filtered = [
+            {
+                **candidate,
+                'signal': 'buy',
+                'confidence': min(0.5 + (candidate['avg_sentiment'] * 0.3) + (candidate['avg_overall'] * 0.2), 1.0)
+            }
+            for candidate in buy_candidates
+        ]
+        filtered = [c for c in filtered if c['confidence'] >= min_confidence]
+        filtered = sorted(filtered, key=lambda x: x['confidence'], reverse=True)[:limit]
+        
+        return JSONResponse({
+            "success": True,
+            "count": len(filtered),
+            "data": filtered
+        })
+    except Exception as e:
+        logger.error(f"Error getting buy candidates: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/trading/sell-candidates")
+async def get_sell_candidates(
+    min_confidence: float = Query(0.5, ge=0.0, le=1.0, description="최소 신뢰도"),
+    limit: int = Query(20, ge=1, le=100, description="조회 개수")
+):
+    """
+    매도 후보 종목 조회
+    
+    - **min_confidence**: 최소 신뢰도 (0.0 ~ 1.0, 기본값: 0.5)
+    - **limit**: 조회 개수 (1-100, 기본값: 20)
+    """
+    try:
+        analysis = trading_analyzer.analyze_today_stocks()
+        sell_candidates = analysis.get('sell_candidates', [])
+        
+        # 신뢰도 필터링 및 제한
+        filtered = [
+            {
+                **candidate,
+                'signal': 'sell',
+                'confidence': min(0.5 + (abs(candidate['avg_sentiment']) * 0.3) + ((1 - candidate['avg_overall']) * 0.2), 1.0)
+            }
+            for candidate in sell_candidates
+        ]
+        filtered = [c for c in filtered if c['confidence'] >= min_confidence]
+        filtered = sorted(filtered, key=lambda x: x['confidence'], reverse=True)[:limit]
+        
+        return JSONResponse({
+            "success": True,
+            "count": len(filtered),
+            "data": filtered
+        })
+    except Exception as e:
+        logger.error(f"Error getting sell candidates: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
