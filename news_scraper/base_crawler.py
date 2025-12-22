@@ -180,9 +180,30 @@ class BaseCrawler(ABC):
         Returns:
             BeautifulSoup 객체 또는 None
         """
+        # 429 에러 방지를 위한 요청 전 딜레이
+        # 사이트별로 다른 딜레이 적용
+        request_delay = 0.5  # 기본 딜레이 (초)
+        if 'hankyung.com' in url:
+            request_delay = 1.0  # 한국경제는 더 긴 딜레이
+        elif 'naver.com' in url or 'finance.naver.com' in url:
+            request_delay = 0.3  # 네이버는 짧은 딜레이
+        elif 'mk.co.kr' in url:
+            request_delay = 0.5
+        
+        # 요청 전 딜레이
+        time.sleep(request_delay)
+        
         for attempt in range(retries):
             try:
                 response = self.session.get(url, timeout=10)
+                
+                # 429 에러 발생 시 더 긴 딜레이로 재시도
+                if response.status_code == 429:
+                    wait_time = delay * (2 ** attempt)  # 지수 백오프
+                    logger.warning(f"[{self.source_name}] 429 에러 발생, {wait_time}초 대기 후 재시도...")
+                    time.sleep(wait_time)
+                    continue
+                
                 response.raise_for_status()
                 
                 # HTML에서 charset 메타 태그 확인
@@ -250,9 +271,17 @@ class BaseCrawler(ABC):
                 
                 return BeautifulSoup(html_content, 'lxml')
             except requests.exceptions.RequestException as e:
+                # 429 에러인 경우 더 긴 딜레이
+                if hasattr(e, 'response') and e.response is not None and e.response.status_code == 429:
+                    wait_time = delay * (2 ** attempt)  # 지수 백오프
+                    logger.warning(f"[{self.source_name}] 429 에러 발생, {wait_time}초 대기 후 재시도...")
+                    if attempt < retries - 1:
+                        time.sleep(wait_time)
+                        continue
+                
                 logger.warning(f"[{self.source_name}] 페이지 가져오기 실패 (시도 {attempt+1}/{retries}): {e}")
                 if attempt < retries - 1:
-                    time.sleep(delay)
+                    time.sleep(delay * (attempt + 1))  # 재시도 시 딜레이 증가
                 else:
                     logger.error(f"[{self.source_name}] 최종 실패: {url}")
                     return None

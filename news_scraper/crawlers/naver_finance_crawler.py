@@ -178,22 +178,25 @@ class NaverFinanceCrawler(BaseCrawler):
         # 상세 내용 크롤링 (모든 뉴스에 대해 수행)
         for news in news_list:
             try:
+                summary = news.get('content') or ""  # 목록 페이지에서 추출한 요약
                 detail = self.crawl_news_detail(news['url'])
-                summary = news.get('content') or ""
 
                 if detail:
                     content = detail.get('content') or ""
-                    merged = (content + " " + summary).strip()
-
-                    # 본문/요약/병합본 중 의미 있는 텍스트를 우선순위에 따라 선택
-                    if len(content) >= 10:
+                    
+                    # 본문이 충분히 길면 본문 사용
+                    if len(content) >= 50:
                         news['content'] = content
-                    elif len(merged) >= 10:
+                    # 본문이 짧지만 요약과 합치면 의미있으면 병합
+                    elif len(content) >= 10 and len(summary) >= 10:
+                        merged = (content + " " + summary).strip()
                         news['content'] = merged
+                    # 본문이 없거나 너무 짧으면 요약 사용
                     elif len(summary) >= 10:
                         news['content'] = summary
+                    # 요약도 없으면 본문이라도 저장 (빈 문자열일 수 있음)
                     else:
-                        news['content'] = content or summary
+                        news['content'] = content or summary or ""
 
                     # 본문에서도 종목 코드 추출하여 기존 코드와 합치기
                     content_codes = self.extract_stock_codes(content)
@@ -206,13 +209,22 @@ class NaverFinanceCrawler(BaseCrawler):
                         else:
                             news['related_stocks'] = content_codes
                 else:
-                    # 상세 페이지 크롤링 실패 시에도 요약이 충분히 길면 사용
-                    if len(summary) >= 10:
+                    # 상세 페이지 크롤링 실패 시에도 요약이 있으면 반드시 사용
+                    # 요약이 5자 이상이면 저장 (기준 완화)
+                    if len(summary) >= 5:
                         news['content'] = summary
                     else:
+                        # 요약도 없으면 빈 문자열이라도 저장 (나중에 재처리 가능하도록)
                         news['content'] = summary or ""
+                        logger.debug(f"[{self.source_name}] 요약 정보도 없음: {news.get('url', '')}")
             except Exception as e:
                 logger.debug(f"[{self.source_name}] 상세 크롤링 오류: {news.get('url', '')} - {e}")
+                # 오류 발생 시에도 요약 정보라도 저장
+                summary = news.get('content') or ""
+                if len(summary) >= 5:
+                    news['content'] = summary
+                else:
+                    news['content'] = summary or ""
                 continue
         
         return news_list
@@ -228,25 +240,33 @@ class NaverFinanceCrawler(BaseCrawler):
             content = ""
             article_body = None
             
-            # 네이버 금융 본문 추출 - 다양한 선택자 순차 시도
+            # 네이버 금융 본문 추출 - 다양한 선택자 순차 시도 (개선된 버전)
             selectors = [
-                # 1순위: 네이버 금융 특정 ID/클래스
+                # 1순위: 네이버 금융 특정 ID/클래스 (최신 패턴)
                 lambda s: s.find('div', id='articleBodyContents'),
                 lambda s: s.find('div', id='newsEndContents'),
-                lambda s: s.find('div', class_='articleBody'),
                 lambda s: s.find('div', id='articleBody'),
-                # 2순위: 일반적인 본문 패턴
-                lambda s: s.find('div', class_=re.compile(r'article.*body|article.*content', re.I)),
-                lambda s: s.find('div', id=re.compile(r'article.*body|article.*content', re.I)),
-                lambda s: s.find('article', class_=re.compile(r'article|content|body', re.I)),
-                lambda s: s.find('article'),
-                # 3순위: 더 넓은 패턴
-                lambda s: s.find('div', class_=re.compile(r'content|body|text|article', re.I)),
-                lambda s: s.find('div', id=re.compile(r'content|body|article', re.I)),
-                # 4순위: 네이버 특정 클래스
-                lambda s: s.find('div', class_=re.compile(r'news_end_body|article_view|article_body', re.I)),
+                lambda s: s.find('div', class_='articleBody'),
+                # 1-1순위: 네이버 금융 iframe 내부 콘텐츠 (외부 기사 링크)
+                lambda s: s.find('iframe', id='mainFrame') or s.find('iframe', id='main_frame'),
+                # 2순위: 네이버 특정 클래스 (더 많은 패턴)
                 lambda s: s.find('div', class_='_article_body_contents'),
                 lambda s: s.find('div', class_='go_trans _article_content'),
+                lambda s: s.find('div', class_=re.compile(r'news_end_body|article_view|article_body', re.I)),
+                lambda s: s.find('div', class_=re.compile(r'article.*body|article.*content', re.I)),
+                lambda s: s.find('div', id=re.compile(r'article.*body|article.*content', re.I)),
+                # 3순위: 일반적인 본문 패턴
+                lambda s: s.find('article', class_=re.compile(r'article|content|body', re.I)),
+                lambda s: s.find('article'),
+                lambda s: s.find('div', class_=re.compile(r'content|body|text|article', re.I)),
+                lambda s: s.find('div', id=re.compile(r'content|body|article', re.I)),
+                # 4순위: 네이버 금융 뉴스 읽기 페이지 특정 구조
+                lambda s: s.find('div', class_='news_read'),
+                lambda s: s.find('div', id='news_read'),
+                lambda s: s.find('div', class_=re.compile(r'news.*read|read.*news', re.I)),
+                # 5순위: 본문 영역을 더 넓게 찾기
+                lambda s: s.find('main'),
+                lambda s: s.find('div', class_=re.compile(r'main|container|wrapper', re.I)),
             ]
             
             # 각 선택자 시도
@@ -254,9 +274,17 @@ class NaverFinanceCrawler(BaseCrawler):
                 try:
                     article_body = selector(soup)
                     if article_body:
+                        # iframe인 경우 처리
+                        if article_body.name == 'iframe':
+                            iframe_src = article_body.get('src', '')
+                            if iframe_src:
+                                # iframe 내부 콘텐츠는 별도 처리 필요하지만, 일단 스킵
+                                # (실제로는 외부 사이트 크롤링이 필요)
+                                continue
+                        
                         # 광고나 불필요한 요소 제거
                         for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside', 'div', 'span'], 
-                                                          class_=re.compile(r'ad|advertisement|banner|sponsor|promotion|related|recommend|news_end_btn', re.I)):
+                                                          class_=re.compile(r'ad|advertisement|banner|sponsor|promotion|related|recommend|news_end_btn|end_photo_org', re.I)):
                             tag.decompose()
                         for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside', 'div'], 
                                                           id=re.compile(r'ad|advertisement|banner|sponsor|promotion', re.I)):
@@ -270,23 +298,42 @@ class NaverFinanceCrawler(BaseCrawler):
                         
                         # 내용이 충분히 길면 성공으로 간주
                         # 기준을 완화하여 더 많은 본문을 수집
-                        if len(content) >= 20:
+                        if len(content) >= 50:  # 20자에서 50자로 상향
                             break
+                        elif len(content) >= 20:
+                            # 20자 이상이면 일단 저장하되, 더 나은 선택자 계속 시도
+                            if not article_body or len(content) > len(content):
+                                pass  # 이미 더 긴 내용을 찾았으면 유지
                 except Exception as e:
                     logger.debug(f"[{self.source_name}] 선택자 시도 오류: {e}")
                     continue
             
             # 여전히 내용이 짧으면 추가 시도
-            if len(content) < 20:
+            if len(content) < 50:
                 # 본문 영역을 더 넓게 찾기
                 main_content = soup.find('main') or soup.find('div', class_=re.compile(r'main|container', re.I))
                 if main_content:
                     # 본문 관련 요소만 추출
-                    for tag in main_content.find_all(['script', 'style', 'iframe', 'ins', 'aside', 'header', 'footer', 'nav']):
+                    for tag in main_content.find_all(['script', 'style', 'iframe', 'ins', 'aside', 'header', 'footer', 'nav', 'div'], 
+                                                      class_=re.compile(r'header|footer|nav|menu|sidebar|ad|advertisement', re.I)):
                         tag.decompose()
                     temp_content = self.extract_text(main_content)
                     if len(temp_content) > len(content):
                         content = temp_content
+                
+                # 마지막 시도: 모든 p 태그에서 본문 추출
+                if len(content) < 50:
+                    all_paragraphs = soup.find_all('p')
+                    paragraph_texts = []
+                    for p in all_paragraphs:
+                        p_text = self.extract_text(p)
+                        # 광고나 불필요한 텍스트 필터링
+                        if len(p_text) > 20 and not any(keyword in p_text.lower() for keyword in ['광고', 'advertisement', 'sponsor', '관련기사', '추천기사']):
+                            paragraph_texts.append(p_text)
+                    if paragraph_texts:
+                        combined_content = ' '.join(paragraph_texts)
+                        if len(combined_content) > len(content):
+                            content = combined_content
             
             # 날짜 정보 재확인
             date_tag = soup.find('span', class_='tah') or \
@@ -301,10 +348,11 @@ class NaverFinanceCrawler(BaseCrawler):
             
             published_at = self.parse_date_string(date_str)
             
-            # 내용이 없거나 너무 짧으면 로깅
+            # 내용이 없거나 너무 짧으면 로깅 (하지만 빈 문자열이라도 반환)
             if len(content) < 50:
                 logger.debug(f"[{self.source_name}] 본문 추출 실패 또는 내용 부족: {url} (길이: {len(content)})")
             
+            # 내용이 없어도 빈 문자열 반환 (요약 정보는 상위에서 처리)
             return {
                 'content': content,
                 'published_at': published_at
@@ -312,7 +360,11 @@ class NaverFinanceCrawler(BaseCrawler):
             
         except Exception as e:
             logger.debug(f"[{self.source_name}] 상세 내용 크롤링 오류: {url} - {e}")
-            return None
+            # 오류 발생 시에도 None 대신 빈 내용 반환 (요약 정보 활용 가능하도록)
+            return {
+                'content': '',
+                'published_at': datetime.now().isoformat()
+            }
     
     def parse_date_string(self, date_str: str) -> str:
         """네이버 금융 날짜 형식 파싱"""

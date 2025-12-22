@@ -6,11 +6,13 @@
 """
 
 import logging
+import time
 from datetime import datetime
 from news_scraper.database import NewsDatabase
 from news_scraper.sentiment_analyzer import SentimentAnalyzer
 from news_scraper.crawlers.hankyung_crawler import HankyungCrawler
 from news_scraper.crawlers.mk_crawler import MKNewsCrawler
+from news_scraper.crawlers.naver_finance_crawler import NaverFinanceCrawler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,16 +30,25 @@ def reprocess_data():
     # 크롤러 인스턴스 생성 (상세 내용 크롤링용)
     crawlers = {
         'hankyung': HankyungCrawler(),
-        'mk_news': MKNewsCrawler()
+        'mk_news': MKNewsCrawler(),
+        'naver_finance': NaverFinanceCrawler()
     }
     
     print("=" * 70)
-    print("기존 데이터 재처리 시작")
+    print("기존 데이터 재처리 시작 (오늘 데이터)")
     print("=" * 70)
     print()
     
-    # 전체 뉴스 조회
-    all_news = db.get_latest_news(limit=100000)
+    # 오늘 날짜 범위 설정
+    today = datetime.now()
+    start_date = today.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_date = today.replace(hour=23, minute=59, second=59, microsecond=999999)
+    
+    # 오늘자 뉴스 조회
+    all_news = db.get_news_by_date_range(
+        start_date.isoformat(),
+        end_date.isoformat()
+    )
     total_count = len(all_news)
     
     print(f"전체 뉴스 개수: {total_count:,}개")
@@ -69,13 +80,27 @@ def reprocess_data():
             crawler = crawlers.get(source)
             if crawler and news_url:
                 try:
+                    # 재처리 시 추가 딜레이 (429 에러 방지)
+                    if source == 'hankyung':
+                        time.sleep(1.5)  # 한국경제는 더 긴 딜레이
+                    elif source == 'naver_finance':
+                        time.sleep(0.5)  # 네이버는 짧은 딜레이
+                    else:
+                        time.sleep(1.0)  # 기본 딜레이
+                    
                     detail = crawler.crawl_news_detail(news_url)
-                    if detail and detail.get('content') and len(detail.get('content', '')) > len(content):
-                        content = detail['content']
-                        stats['content_added'] += 1
-                        updated = True
+                    if detail and detail.get('content'):
+                        new_content = detail.get('content', '')
+                        # 새 내용이 기존 내용보다 길면 업데이트
+                        if len(new_content) > len(content or ''):
+                            content = new_content
+                            stats['content_added'] += 1
+                            updated = True
                 except Exception as e:
                     logger.debug(f"상세 내용 크롤링 오류: {news_url} - {e}")
+                    # 429 에러인 경우 더 긴 딜레이 후 계속
+                    if '429' in str(e) or 'Too Many Requests' in str(e):
+                        time.sleep(5.0)  # 5초 대기 후 계속
         
         # 2. 감성 분석이 안 된 경우 분석 수행
         if sentiment_score is None:
