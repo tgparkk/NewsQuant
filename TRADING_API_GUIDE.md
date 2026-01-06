@@ -425,3 +425,7 @@ def screen_buy_candidates(min_confidence=0.6):
 더 자세한 API 문서는 다음 주소에서 확인할 수 있습니다:
 - Swagger UI: `http://127.0.0.1:8000/docs`
 - ReDoc: `http://127.0.0.1:8000/redoc`
+
+
+
+

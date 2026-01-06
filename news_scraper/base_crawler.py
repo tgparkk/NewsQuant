@@ -143,11 +143,23 @@ class BaseCrawler(ABC):
         """
         Args:
             source_name: 출처 이름
-            headers: HTTP 헤더 (기본 User-Agent 포함)
+            headers: HTTP 헤더
         """
         self.source_name = source_name
+        self.user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 17_1_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1.2 Mobile/15E148 Safari/604.1'
+        ]
+        import random
         self.headers = headers or {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            'User-Agent': random.choice(self.user_agents),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'ko-KR,ko;q=0.8,en-US;q=0.5,en;q=0.3',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
         }
         self.session = requests.Session()
         self.session.headers.update(self.headers)
@@ -358,15 +370,16 @@ class BaseCrawler(ABC):
     def extract_stock_codes(self, text: str) -> str:
         """
         텍스트에서 종목 코드 추출 (6자리 숫자 + 종목명 매핑)
-        
-        Args:
-            text: 추출할 텍스트
-        
-        Returns:
-            콤마로 구분된 종목 코드 문자열
         """
         if not text:
             return ""
+        
+        # 노이즈 제거: 특정 키워드 이후의 텍스트는 제외
+        noise_keywords = ['인기검색어', '인기종목', '관련 뉴스', '주요 종목', '증시 현황', '더보기']
+        clean_text = text
+        for keyword in noise_keywords:
+            if keyword in clean_text:
+                clean_text = clean_text.split(keyword)[0]
         
         codes = set()
         import re
@@ -399,21 +412,15 @@ class BaseCrawler(ABC):
         
         # 3. 종목명으로 추출 (긴 이름부터 매칭하여 정확도 향상)
         for stock_name, stock_code in sorted_stocks:
-            # 단어 경계를 고려한 매칭 (부분 단어 오매칭 방지)
             if len(stock_name) >= 2:
-                # 한글 종목명의 경우 더 유연한 매칭
-                # 제목이나 요약에서는 단어 경계가 덜 엄격할 수 있음
-                patterns = [
-                    r'\b' + re.escape(stock_name) + r'\b',  # 단어 경계
-                    r'\s+' + re.escape(stock_name) + r'[\s,\.]',  # 앞뒤 공백/구두점
-                    r'[' + re.escape(stock_name) + r']',  # 단독 언급
-                ]
-                for pattern in patterns:
-                    if re.search(pattern, text):
-                        codes.add(stock_code)
-                        break  # 한 번 매칭되면 다음 종목으로
+                # 한국어는 \b(word boundary)가 잘 작동하지 않으므로 앞뒤 문맥 확인
+                # 패턴: 앞뒤가 공백, 문장 부호, 또는 시작/끝인 경우
+                pattern = r'(?:^|[\s\(\[\{\,\.\?\!\/])' + re.escape(stock_name) + r'(?=$|[\s\)\}\]\,\.\?\!\/])'
+                if re.search(pattern, text):
+                    codes.add(stock_code)
         
         # 4. 6자리 숫자 패턴으로 직접 추출
+        # ... (생략 가능하지만 코드 흐름상 유지)
         # 종목 코드는 보통 0~6으로 시작 (한국 주식 시장 특성)
         numeric_codes = re.findall(r'\b(\d{6})\b', text)
         # 유효한 종목 코드 범위 체크

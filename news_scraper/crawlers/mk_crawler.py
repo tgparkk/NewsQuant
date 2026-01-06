@@ -27,11 +27,11 @@ class MKNewsCrawler(BaseCrawler):
         """뉴스 목록 크롤링"""
         news_list = []
         
-        # 경제/증시 섹션 URL들
+        # 최신 매일경제 섹션 URL 구조
         sections = [
-            {'url': 'https://www.mk.co.kr/news/economy', 'name': '경제'},
-            {'url': 'https://www.mk.co.kr/news/finance', 'name': '금융'},
-            {'url': 'https://www.mk.co.kr/news/stock', 'name': '증시'}
+            {'url': 'https://www.mk.co.kr/news/economy/', 'name': '경제'},
+            {'url': 'https://www.mk.co.kr/news/finance/', 'name': '금융'},
+            {'url': 'https://www.mk.co.kr/news/stock/', 'name': '증시'}
         ]
         
         for section in sections:
@@ -256,7 +256,6 @@ class MKNewsCrawler(BaseCrawler):
         return datetime.now().isoformat()
     
     def extract_stock_codes(self, text: str) -> str:
-        """종목 코드 추출"""
-        codes = re.findall(r'\b\d{6}\b', text)
-        return ','.join(set(codes))
+        """종목 코드 추출 (부모 클래스의 개선된 로직 사용)"""
+        return super().extract_stock_codes(text)
 

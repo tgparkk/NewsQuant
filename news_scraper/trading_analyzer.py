@@ -311,3 +311,7 @@ class TradingAnalyzer:
             'signal_reason': signal_info['reason'],
             'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
+
+
+
+

@@ -279,34 +279,21 @@ class NaverFinanceCrawler(BaseCrawler):
             
             # 네이버 금융 본문 추출 - 다양한 선택자 순차 시도 (개선된 버전)
             selectors = [
-                # 1순위: 네이버 금융 특정 ID/클래스 (최신 패턴) - 가장 정확한 선택자
+                # 1순위: 네이버 금융 특정 ID/클래스 (최신 패턴)
                 lambda s: s.find('div', id='articleBodyContents'),
                 lambda s: s.find('div', id='newsEndContents'),
+                lambda s: s.find('div', id='dic_area'),  # 네이버 뉴스 일반 섹션 최신 패턴
                 lambda s: s.find('div', id='articleBody'),
-                lambda s: s.find('div', class_='articleBody'),
-                # 1-1순위: 네이버 금융 뉴스 읽기 페이지 특정 구조
+                lambda s: s.find('div', class_='article_body'),
                 lambda s: s.find('div', class_='news_read'),
                 lambda s: s.find('div', id='news_read'),
-                lambda s: s.find('div', class_=re.compile(r'news.*read|read.*news', re.I)),
-                # 1-2순위: 네이버 특정 클래스 (더 많은 패턴)
-                lambda s: s.find('div', class_='_article_body_contents'),
-                lambda s: s.find('div', class_='go_trans _article_content'),
-                lambda s: s.find('div', class_=re.compile(r'news_end_body|article_view|article_body', re.I)),
-                lambda s: s.find('div', class_=re.compile(r'article.*body|article.*content', re.I)),
-                lambda s: s.find('div', id=re.compile(r'article.*body|article.*content', re.I)),
-                # 1-3순위: 네이버 금융 추가 패턴
-                lambda s: s.find('div', id=re.compile(r'news.*body|news.*content', re.I)),
-                lambda s: s.find('div', class_=re.compile(r'news.*body|news.*content', re.I)),
-                lambda s: s.find('div', id='content'),
-                lambda s: s.find('div', class_='content'),
-                # 2순위: 일반적인 본문 패턴
-                lambda s: s.find('article', class_=re.compile(r'article|content|body', re.I)),
+                # 2순위: 연합뉴스, 뉴스1 등 언론사별 특정 패턴
+                lambda s: s.find('div', class_='article_txt'),
+                lambda s: s.find('div', class_='article-body'),
+                lambda s: s.find('div', class_=re.compile(r'art_body|post_content|content_area', re.I)),
+                # 3순위: 일반적인 본문 패턴
                 lambda s: s.find('article'),
-                lambda s: s.find('div', class_=re.compile(r'content|body|text|article', re.I)),
-                lambda s: s.find('div', id=re.compile(r'content|body|article', re.I)),
-                # 3순위: 본문 영역을 더 넓게 찾기
                 lambda s: s.find('main'),
-                lambda s: s.find('div', class_=re.compile(r'main|container|wrapper', re.I)),
             ]
             
             # 먼저 페이지 내의 모든 iframe 확인 및 처리

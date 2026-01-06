@@ -19,21 +19,21 @@ class SentimentAnalyzer:
         # 성장/실적 관련
         '상승', '증가', '성장', '호재', '실적 호조', '실적 개선', '수익 증가',
         '매출 증가', '영업이익 증가', '순이익 증가', '실적 부진 탈출',
-        '반등', '회복', '개선', '향상', '증대', '확대', '성공',
+        '반등', '회복', '개선', '향상', '증대', '확대', '성공', '최고치', '사상 최대',
         
         # 투자/계약 관련
-        '투자 유치', '계약 체결', '수주', '납품', '공급 계약',
-        '인수', '합병', '제휴', '협력', '파트너십',
+        '투자 유치', '계약 체결', '수주', '납품', '공급 계약', '독점',
+        '인수', '합병', '제휴', '협력', '파트너십', '업무협약', 'MOU',
         
         # 긍정적 전망
-        '긍정적', '낙관적', '기대', '전망 밝다', '유리하다',
-        '강세', '상승세', '상승 전망', '목표가 상향', '투자의견 상향',
+        '긍정적', '낙관적', '기대', '전망 밝다', '유리하다', '재평가',
+        '강세', '상승세', '상승 전망', '목표가 상향', '투자의견 상향', '매수 추천',
         
         # 기술/혁신
-        '기술 개발', '특허', '신제품', '출시', '혁신',
+        '기술 개발', '특허', '신제품', '출시', '혁신', '세계 최초', '국내 최초',
         
         # 시장 반응
-        '관심', '주목', '인기', '화제', '이슈',
+        '관심', '주목', '인기', '화제', '이슈', '러브콜', '잭팟',
     ]
     
     # 부정 키워드 (주가 하락 우려)
@@ -41,23 +41,29 @@ class SentimentAnalyzer:
         # 하락/손실 관련
         '하락', '감소', '손실', '부진', '실적 부진', '실적 악화',
         '수익 감소', '매출 감소', '영업이익 감소', '순이익 감소',
-        '적자', '손해', '채무', '부채 증가',
+        '적자', '손해', '채무', '부채 증가', '자본잠식',
         
         # 부정적 전망
-        '부정적', '비관적', '우려', '우려 증대', '리스크',
-        '약세', '하락세', '하락 전망', '목표가 하향', '투자의견 하향',
+        '부정적', '비관적', '우려', '우려 증대', '리스크', '불확실성',
+        '약세', '하락세', '하락 전망', '목표가 하향', '투자의견 하향', '매도 의견',
         
         # 문제/사고
-        '사고', '사건', '논란', '문제', '이슈', '분쟁',
-        '규제', '제재', '조사', '수사', '기소',
+        '사고', '사건', '논란', '문제', '이슈', '분쟁', '법적 대응',
+        '규제', '제재', '조사', '수사', '기소', '압수수색', '벌금', '과징금',
         
         # 경영 문제
-        '경영진 교체', '사퇴', '해임', '경영 위기',
-        '파업', '노조', '갈등',
+        '경영진 교체', '사퇴', '해임', '경영 위기', '횡령', '배임',
+        '파업', '노조', '갈등', '내분',
         
         # 시장 부정
-        '폭락', '급락', '매도', '매도세', '하락 압력',
+        '폭락', '급락', '매도', '매도세', '하락 압력', '공매도', '반대매매',
     ]
+
+    # 강력한 호재 (가중치 높음)
+    STRONG_POSITIVE = ['공급계약', '수주 성공', '영업이익 폭증', '인수 합병', '임상 성공', '상한가']
+    
+    # 강력한 악재 (가중치 높음)
+    STRONG_NEGATIVE = ['상장폐지', '횡령', '배임', '영업이익 급감', '임상 실패', '부도', '하한가']
     
     # 중요 키워드 (뉴스 중요도 상승)
     IMPORTANCE_KEYWORDS = [
@@ -248,36 +254,46 @@ class SentimentAnalyzer:
     
     def analyze_news(self, news_data: Dict) -> Dict:
         """
-        뉴스 전체 분석 및 점수 계산
-        
-        Args:
-            news_data: 뉴스 데이터 딕셔너리
-        
-        Returns:
-            점수가 추가된 뉴스 데이터
+        뉴스 전체 분석 및 점수 계산 (고도화 버전)
         """
         title = news_data.get('title', '')
         content = news_data.get('content', '')
-        text = f"{title} {content}"
         
+        # 1. 감성 점수 계산 (제목 가중치 부여)
+        # 제목은 본문보다 3배 더 중요하게 처리
+        title_sentiment = self.calculate_sentiment_score(title)
+        content_sentiment = self.calculate_sentiment_score(content)
+        
+        # 강력한 키워드 체크 (제목 우선)
+        strong_pos = any(kw in title for kw in self.STRONG_POSITIVE)
+        strong_neg = any(kw in title for kw in self.STRONG_NEGATIVE)
+        
+        sentiment = (title_sentiment * 0.7 + content_sentiment * 0.3)
+        if strong_pos: sentiment = min(1.0, sentiment + 0.3)
+        if strong_neg: sentiment = max(-1.0, sentiment - 0.3)
+        
+        # 2. 중요도 및 영향도 점수
         source = news_data.get('source', '')
         category = news_data.get('category', '')
         related_stocks = news_data.get('related_stocks', '')
         published_at = news_data.get('published_at', '')
         
-        # 각 점수 계산
-        sentiment = self.calculate_sentiment_score(text)
-        importance = self.calculate_importance_score(text, source, category)
-        impact = self.calculate_impact_score(text, related_stocks)
+        importance = self.calculate_importance_score(f"{title} {content}", source, category)
+        
+        # 제목에 종목명이 명시적으로 포함되어 있으면 중요도 상승
+        if any(stock.strip() in title for stock in related_stocks.split(',') if len(stock.strip()) >= 2):
+            importance = min(1.0, importance + 0.2)
+            
+        impact = self.calculate_impact_score(f"{title} {content}", related_stocks)
         timeliness = self.calculate_timeliness_score(published_at)
         
-        # 종합 점수 (가중 평균)
-        # 감성 점수를 주요 점수로 사용하되, 다른 요소들도 반영
+        # 3. 종합 점수 (가중 평균)
+        # 감성 40%, 중요도 30%, 영향도 20%, 실시간성 10%
         overall_score = (
-            sentiment * 0.5 +  # 감성 50%
-            importance * 0.2 +  # 중요도 20%
-            impact * 0.2 +      # 영향도 20%
-            timeliness * 0.1    # 실시간성 10%
+            sentiment * 0.4 +
+            importance * 0.3 +
+            impact * 0.2 +
+            timeliness * 0.1
         )
         
         # 결과 반영

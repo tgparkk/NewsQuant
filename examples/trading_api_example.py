@@ -335,3 +335,7 @@ if __name__ == "__main__":
         print("API 서버가 실행 중인지 확인하세요: python -m news_scraper.api.server")
     except Exception as e:
         print(f"오류 발생: {e}")
+
+
+
+
