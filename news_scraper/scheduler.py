@@ -86,9 +86,21 @@ class NewsScheduler:
                 news_list = crawler.crawl_news_list(max_pages=3)
                 
                 if news_list:
-                    # ... (기존 로직)
+                    # 뉴스 분석 및 점수 계산
+                    analyzed_news_list = []
+                    for news in news_list:
+                        analyzed_news = self.sentiment_analyzer.analyze_news(news)
+                        analyzed_news_list.append(analyzed_news)
+                    
                     inserted_count = self.db.insert_news_batch(analyzed_news_list)
-                    # ...
+                    total_news_count += inserted_count
+                    
+                    self.db.log_collection(
+                        source=crawler.source_name,
+                        news_count=inserted_count,
+                        status="success"
+                    )
+                    
                     logger.info(f"[{crawler.source_name}] {inserted_count}개 신규 뉴스 저장 완료 (총 {len(news_list)}개 발견)")
                 else:
                     logger.warning(f"[{crawler.source_name}] 수집된 뉴스가 없습니다. (URL 변경 또는 차단 가능성)")
