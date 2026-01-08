@@ -29,9 +29,9 @@ class MKNewsCrawler(BaseCrawler):
         
         # 최신 매일경제 섹션 URL 구조
         sections = [
-            {'url': 'https://www.mk.co.kr/news/economy/', 'name': '경제'},
-            {'url': 'https://www.mk.co.kr/news/finance/', 'name': '금융'},
-            {'url': 'https://www.mk.co.kr/news/stock/', 'name': '증시'}
+            {'url': 'https://www.mk.co.kr/news/economy', 'name': '경제'},
+            {'url': 'https://www.mk.co.kr/news/finance', 'name': '금융'},
+            {'url': 'https://www.mk.co.kr/news/stock', 'name': '증시'}
         ]
         
         for section in sections:
@@ -150,6 +150,10 @@ class MKNewsCrawler(BaseCrawler):
             selectors = [
                 # 1순위: 매일경제 특정 클래스
                 lambda s: s.find('div', class_='news_cnt_detail_wrap'),
+                lambda s: s.find('div', id='article_body'),
+                lambda s: s.find('div', class_='article_body'),
+                lambda s: s.find('div', id='news_body'),
+                lambda s: s.find('div', class_='news_body'),
                 lambda s: s.find('div', class_=re.compile(r'article|content|body|text|news_body', re.I)),
                 lambda s: s.find('div', id=re.compile(r'article|content|body', re.I)),
                 # 2순위: 일반적인 본문 패턴

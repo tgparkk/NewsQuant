@@ -13,11 +13,11 @@ import pytz
 from .database import NewsDatabase
 from .sentiment_analyzer import SentimentAnalyzer
 from .crawlers.naver_finance_crawler import NaverFinanceCrawler
+from .crawlers.dart_crawler import DARTCrawler
 # from .crawlers.krx_crawler import KRXCrawler  # 비활성화: 접근 불가
 # from .crawlers.yonhap_crawler import YonhapCrawler  # 비활성화: 접근 불가
 from .crawlers.hankyung_crawler import HankyungCrawler
 from .crawlers.mk_crawler import MKNewsCrawler
-from .crawlers.dart_crawler import DARTCrawler
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +37,11 @@ class NewsScheduler:
         # 크롤러 리스트
         self.crawlers = [
             NaverFinanceCrawler(),
+            DARTCrawler(),
             # KRXCrawler(),  # 비활성화: 접근 불가 (404 오류)
             # YonhapCrawler(),  # 비활성화: 접근 불가 (400 오류)
             HankyungCrawler(),
-            MKNewsCrawler(),
-            DARTCrawler()
+            MKNewsCrawler()
         ]
         
         # 마지막 수집 시간 추적
@@ -80,30 +80,48 @@ class NewsScheduler:
         
         for crawler in self.crawlers:
             try:
-                logger.info(f"[{crawler.source_name}] 크롤링 시작 (Headers: {crawler.headers.get('User-Agent')[:30]}...)")
+                logger.info(f"[{crawler.source_name}] 크롤링 시작...")
                 
                 # 뉴스 목록 크롤링
-                news_list = crawler.crawl_news_list(max_pages=3)
+                news_list = crawler.crawl_news_list(max_pages=3)  # 각 크롤러당 최대 3페이지
                 
                 if news_list:
-                    # 뉴스 분석 및 점수 계산
+                    # 감성 분석 및 점수 계산 (모든 뉴스에 대해 강제 적용)
                     analyzed_news_list = []
                     for news in news_list:
-                        analyzed_news = self.sentiment_analyzer.analyze_news(news)
-                        analyzed_news_list.append(analyzed_news)
+                        try:
+                            # 제목이나 내용이 없어도 기본값으로 분석 시도
+                            if not news.get('title'):
+                                news['title'] = ''
+                            if not news.get('content'):
+                                news['content'] = ''
+                            
+                            analyzed_news = self.sentiment_analyzer.analyze_news(news)
+                            analyzed_news_list.append(analyzed_news)
+                        except Exception as e:
+                            logger.warning(f"[{crawler.source_name}] 감성 분석 오류: {e}")
+                            # 분석 실패 시 기본값 설정
+                            news['sentiment_score'] = 0.0
+                            news['importance_score'] = 0.0
+                            news['impact_score'] = 0.0
+                            news['timeliness_score'] = 0.5
+                            news['overall_score'] = 0.0
+                            analyzed_news_list.append(news)
                     
+                    # 데이터베이스에 저장
                     inserted_count = self.db.insert_news_batch(analyzed_news_list)
                     total_news_count += inserted_count
                     
+                    # 수집 로그 기록
                     self.db.log_collection(
                         source=crawler.source_name,
                         news_count=inserted_count,
                         status="success"
                     )
                     
-                    logger.info(f"[{crawler.source_name}] {inserted_count}개 신규 뉴스 저장 완료 (총 {len(news_list)}개 발견)")
+                    logger.info(f"[{crawler.source_name}] {inserted_count}개 뉴스 수집 완료")
                 else:
-                    logger.warning(f"[{crawler.source_name}] 수집된 뉴스가 없습니다. (URL 변경 또는 차단 가능성)")
+                    logger.warning(f"[{crawler.source_name}] 수집된 뉴스가 없습니다.")
                     self.db.log_collection(
                         source=crawler.source_name,
                         news_count=0,

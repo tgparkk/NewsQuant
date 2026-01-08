@@ -153,16 +153,37 @@ class NewsDatabase:
                 """문자열이 올바른 UTF-8인지 확인하고 정리"""
                 if not text:
                     return text
+                
                 if isinstance(text, bytes):
-                    # 바이트인 경우 UTF-8로 디코딩 시도
-                    try:
-                        text = text.decode('utf-8', errors='replace')
-                    except:
-                        text = text.decode('utf-8', errors='ignore')
-                # replacement character 제거
+                    # 바이트인 경우 다양한 인코딩으로 디코딩 시도
+                    for encoding in ['utf-8', 'euc-kr', 'cp949', 'latin1']:
+                        try:
+                            return text.decode(encoding, errors='strict')
+                        except (UnicodeDecodeError, UnicodeError):
+                            continue
+                    return text.decode('utf-8', errors='replace')
+                
+                # 이미 문자열인 경우, 인코딩이 깨졌는지 확인 (latin1로 잘못 디코딩된 경우 등)
+                try:
+                    # latin1로 인코딩했을 때 다시 복구 가능한지 확인 (일반적인 인코딩 깨짐 현상 복구)
+                    if any(ord(c) > 0x7F and ord(c) < 0x100 for c in text):
+                        # 깨진 문자열 패턴이 보이면 재인코딩/디코딩 시도
+                        for encoding in ['euc-kr', 'cp949']:
+                            try:
+                                recovered = text.encode('latin1').decode(encoding)
+                                if any('\uac00' <= char <= '\ud7a3' for char in recovered):
+                                    return recovered
+                            except:
+                                continue
+                except:
+                    pass
+                
+                # replacement character (\ufffd) 처리: 제거하지 않고 유지하거나 공백으로 대체
+                # 기존 코드는 무조건 제거했으나, 이는 정보 손실을 초래할 수 있음
                 if '\ufffd' in text:
-                    # 깨진 문자 제거
-                    text = text.replace('\ufffd', '')
+                    # 로깅만 하고 일단 유지
+                    logger.debug(f"데이터에 깨진 문자(Replacement Character) 포함됨: {text[:50]}")
+                
                 return text
             
             title = ensure_utf8(news_data.get('title'))

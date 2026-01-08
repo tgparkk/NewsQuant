@@ -287,6 +287,11 @@ class NaverFinanceCrawler(BaseCrawler):
                 lambda s: s.find('div', class_='article_body'),
                 lambda s: s.find('div', class_='news_read'),
                 lambda s: s.find('div', id='news_read'),
+                # 추가된 네이버 금융/뉴스 패턴
+                lambda s: s.find('div', class_='article_view'),
+                lambda s: s.find('div', class_='article_content'),
+                lambda s: s.find('div', id='articeBody'), # 오타 대응
+                lambda s: s.find('div', class_='view_content'),
                 # 2순위: 연합뉴스, 뉴스1 등 언론사별 특정 패턴
                 lambda s: s.find('div', class_='article_txt'),
                 lambda s: s.find('div', class_='article-body'),
