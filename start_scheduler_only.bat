@@ -29,7 +29,7 @@ echo 종료하려면 Ctrl+C를 누르세요.
 echo.
 
 REM 스케줄러만 실행하는 Python 스크립트 실행
-python -c "from news_scraper.scheduler import NewsScheduler; import logging; logging.basicConfig(level=logging.INFO, format='%%(asctime)s - %%(name)s - %%(levelname)s - %%(message)s'); scheduler = NewsScheduler(); scheduler.start()"
+python run_scheduler.py
 
 pause
 

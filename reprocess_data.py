@@ -134,9 +134,8 @@ def reprocess_data():
         if not related_stocks or len(related_stocks) < 3:
             try:
                 text = f"{title} {content}"
-                # BaseCrawler의 extract_stock_codes 사용
-                from news_scraper.base_crawler import BaseCrawler
-                temp_crawler = BaseCrawler("temp")
+                # 기존 크롤러 인스턴스 사용 (BaseCrawler의 메서드 활용)
+                temp_crawler = crawlers.get('naver_finance')
                 new_stocks = temp_crawler.extract_stock_codes(text)
                 
                 if new_stocks and len(new_stocks) > len(related_stocks):

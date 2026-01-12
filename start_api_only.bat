@@ -32,7 +32,7 @@ echo 종료하려면 Ctrl+C를 누르세요.
 echo.
 
 REM API 서버만 실행하는 Python 스크립트 실행
-python -c "from news_scraper.api.server import start_api_server; start_api_server('127.0.0.1', 8000)"
+python run_api.py
 
 pause
 

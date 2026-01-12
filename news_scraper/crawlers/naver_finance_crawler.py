@@ -272,6 +272,21 @@ class NaverFinanceCrawler(BaseCrawler):
             logger.warning(f"[{self.source_name}] 페이지 가져오기 실패: {url}")
             return None
         
+        # JavaScript 리다이렉트 처리
+        # 예: <SCRIPT>top.location.href='https://n.news.naver.com/mnews/article/018/0005236061';</SCRIPT>
+        script_content = str(soup)
+        if 'top.location.href' in script_content and len(script_content) < 1000:
+            redirect_match = re.search(r"top\.location\.href\s*=\s*['\"]([^'\"]+)['\"]", script_content)
+            if redirect_match:
+                new_url = redirect_match.group(1)
+                logger.debug(f"[{self.source_name}] JavaScript 리다이렉트 감지: {url} -> {new_url}")
+                soup = self.fetch_page(new_url)
+                if not soup:
+                    logger.warning(f"[{self.source_name}] 리다이렉트 페이지 가져오기 실패: {new_url}")
+                    return None
+                # URL 업데이트 (로깅용)
+                url = new_url
+        
         try:
             content = ""
             article_body = None
@@ -279,10 +294,11 @@ class NaverFinanceCrawler(BaseCrawler):
             
             # 네이버 금융 본문 추출 - 다양한 선택자 순차 시도 (개선된 버전)
             selectors = [
-                # 1순위: 네이버 금융 특정 ID/클래스 (최신 패턴)
+                # 1순위: 네이버 금융/뉴스 최신 패턴
+                lambda s: s.find('article', id='dic_area'),  # 네이버 뉴스 모바일/PC 공통 (가장 정확)
+                lambda s: s.find('div', id='dic_area'),      # 네이버 뉴스 일반 섹션
                 lambda s: s.find('div', id='articleBodyContents'),
                 lambda s: s.find('div', id='newsEndContents'),
-                lambda s: s.find('div', id='dic_area'),  # 네이버 뉴스 일반 섹션 최신 패턴
                 lambda s: s.find('div', id='articleBody'),
                 lambda s: s.find('div', class_='article_body'),
                 lambda s: s.find('div', class_='news_read'),
