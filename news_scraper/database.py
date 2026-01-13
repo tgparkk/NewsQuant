@@ -59,6 +59,7 @@ class NewsDatabase:
                 impact_score REAL,
                 timeliness_score REAL,
                 overall_score REAL,
+                duplicate_count INTEGER DEFAULT 1,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
@@ -82,6 +83,11 @@ class NewsDatabase:
         
         try:
             cursor.execute("ALTER TABLE news ADD COLUMN overall_score REAL")
+        except sqlite3.OperationalError:
+            pass
+        
+        try:
+            cursor.execute("ALTER TABLE news ADD COLUMN duplicate_count INTEGER DEFAULT 1")
         except sqlite3.OperationalError:
             pass
         
@@ -191,33 +197,51 @@ class NewsDatabase:
             category = ensure_utf8(news_data.get('category', ''))
             related_stocks = ensure_utf8(news_data.get('related_stocks', ''))
             
-            cursor.execute("""
-                INSERT OR REPLACE INTO news 
-                (news_id, title, content, published_at, source, category, 
-                 url, related_stocks, sentiment_score, importance_score, 
-                 impact_score, timeliness_score, overall_score, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                news_data.get('news_id'),
-                title,
-                content,
-                news_data.get('published_at'),
-                news_data.get('source'),
-                category,
-                news_data.get('url'),
-                related_stocks,
-                news_data.get('sentiment_score'),
-                news_data.get('importance_score'),
-                news_data.get('impact_score'),
-                news_data.get('timeliness_score'),
-                news_data.get('overall_score'),
-                datetime.now().isoformat()
-            ))
+            # 먼저 기존 뉴스가 있는지 확인
+            news_id = news_data.get('news_id')
+            cursor.execute("SELECT id, duplicate_count FROM news WHERE news_id = ?", (news_id,))
+            existing = cursor.fetchone()
+            
+            if existing:
+                # 중복 뉴스인 경우 - duplicate_count 증가
+                new_count = existing[1] + 1
+                cursor.execute("""
+                    UPDATE news 
+                    SET duplicate_count = ?,
+                        updated_at = ?
+                    WHERE news_id = ?
+                """, (new_count, datetime.now().isoformat(), news_id))
+                logger.debug(f"중복 뉴스 카운트 증가: {news_id} (count: {new_count})")
+            else:
+                # 새로운 뉴스인 경우 - INSERT
+                cursor.execute("""
+                    INSERT INTO news 
+                    (news_id, title, content, published_at, source, category, 
+                     url, related_stocks, sentiment_score, importance_score, 
+                     impact_score, timeliness_score, overall_score, duplicate_count, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    news_id,
+                    title,
+                    content,
+                    news_data.get('published_at'),
+                    news_data.get('source'),
+                    category,
+                    news_data.get('url'),
+                    related_stocks,
+                    news_data.get('sentiment_score'),
+                    news_data.get('importance_score'),
+                    news_data.get('impact_score'),
+                    news_data.get('timeliness_score'),
+                    news_data.get('overall_score'),
+                    1,  # duplicate_count 초기값
+                    datetime.now().isoformat()
+                ))
             
             conn.commit()
             return True
-        except sqlite3.IntegrityError:
-            logger.debug(f"중복 뉴스 건너뜀: {news_data.get('news_id')}")
+        except sqlite3.IntegrityError as e:
+            logger.debug(f"중복 뉴스 오류: {news_data.get('news_id')} - {e}")
             return False
         except Exception as e:
             logger.error(f"뉴스 삽입 오류: {e}")

@@ -93,6 +93,8 @@ class HankyungCrawler(BaseCrawler):
                             text_for_extraction = f"{title} {summary}"
                             related_stocks = self.extract_stock_codes(text_for_extraction)
                             
+                            # 주의: 본문은 상세 페이지에서 추가로 추출됨
+                            
                             news_data = {
                                 'news_id': self.generate_news_id(news_url, title),
                                 'title': title,
@@ -271,10 +273,16 @@ class HankyungCrawler(BaseCrawler):
             if len(content) < 50:
                 logger.debug(f"[{self.source_name}] 본문 추출 실패 또는 내용 부족: {url} (길이: {len(content)})")
             
+            # 본문에서 종목 코드 재추출 (더 정확한 종목 파악)
+            related_stocks = ""
+            if content and len(content) >= 50:
+                related_stocks = self.extract_stock_codes(content)
+            
             # 내용이 없어도 빈 문자열 반환 (요약 정보는 상위에서 처리)
             return {
                 'content': content,
-                'published_at': published_at
+                'published_at': published_at,
+                'related_stocks': related_stocks  # 본문 기반 종목 코드 (있으면 업데이트됨)
             }
             
         except Exception as e:

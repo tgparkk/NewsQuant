@@ -66,21 +66,40 @@ class DARTCrawler(BaseCrawler):
                     corp_name = item.get('corp_name')
                     report_nm = item.get('report_nm')
                     rcept_no = item.get('rcept_no')
-                    stock_code = item.get('stock_code', '')
+                    stock_code = item.get('stock_code', '').strip()
                     
                     # 뉴스 형식으로 데이터 매핑
                     title = f"[{corp_name}] {report_nm}"
                     # DART 웹 뷰어 주소
                     url = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}"
                     
-                    # 공시 데이터 생성
-                    related_stocks = stock_code
+                    # 공시 데이터 생성 - 다단계 종목 코드 추출
+                    related_stocks = ""
+                    
+                    # 1단계: API의 stock_code 사용 (최우선)
+                    if stock_code and stock_code != ' ':
+                        related_stocks = stock_code
+                    
+                    # 2단계: 회사명 정확히 매핑 (확장 종목 리스트 사용)
                     if not related_stocks:
                         from ..base_crawler import STOCK_NAME_TO_CODE
+                        # 정확한 회사명 매칭
                         related_stocks = STOCK_NAME_TO_CODE.get(corp_name, "")
+                        
+                        # 회사명 변형 시도
+                        if not related_stocks:
+                            # "주식회사 삼성전자" → "삼성전자"
+                            for prefix in ['주식회사 ', '㈜', '(주)', '(주) ']:
+                                if corp_name.startswith(prefix):
+                                    clean_name = corp_name[len(prefix):].strip()
+                                    related_stocks = STOCK_NAME_TO_CODE.get(clean_name, "")
+                                    if related_stocks:
+                                        break
                     
+                    # 3단계: 제목과 회사명에서 종목 코드 추출
                     if not related_stocks:
-                        related_stocks = self.extract_stock_codes(corp_name)
+                        text_for_extraction = f"{corp_name} {report_nm}"
+                        related_stocks = self.extract_stock_codes(text_for_extraction)
 
                     news_item = {
                         'news_id': self.generate_news_id(url, title),

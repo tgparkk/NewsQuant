@@ -126,6 +126,17 @@ class MKNewsCrawler(BaseCrawler):
                     news['content'] = summary
                 else:
                     news['content'] = content or summary
+                
+                # 본문에서 추출한 종목 코드 병합
+                detail_stocks = detail.get('related_stocks', '')
+                existing_stocks = news.get('related_stocks', '')
+                if detail_stocks:
+                    if existing_stocks:
+                        # 기존 코드와 합치기 (중복 제거)
+                        all_codes = set(existing_stocks.split(',')) | set(detail_stocks.split(','))
+                        news['related_stocks'] = ','.join(sorted(filter(None, all_codes)))
+                    else:
+                        news['related_stocks'] = detail_stocks
             else:
                 # 상세 페이지 크롤링 실패 시에도 요약이 충분히 길면 사용
                 if len(summary) >= 10:
@@ -213,9 +224,15 @@ class MKNewsCrawler(BaseCrawler):
             if len(content) < 50:
                 logger.debug(f"[{self.source_name}] 본문 추출 실패 또는 내용 부족: {url} (길이: {len(content)})")
             
+            # 본문에서 종목 코드 재추출 (더 정확한 종목 파악)
+            related_stocks = ""
+            if content and len(content) >= 50:
+                related_stocks = self.extract_stock_codes(content)
+            
             return {
                 'content': content,
-                'published_at': published_at
+                'published_at': published_at,
+                'related_stocks': related_stocks  # 본문 기반 종목 코드
             }
             
         except Exception as e:

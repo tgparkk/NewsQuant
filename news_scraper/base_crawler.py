@@ -14,8 +14,9 @@ import hashlib
 
 logger = logging.getLogger(__name__)
 
-# 주요 종목명 → 종목 코드 매핑 (주요 대형주 중심)
-STOCK_NAME_TO_CODE = {
+# 주요 종목명 → 종목 코드 매핑
+# 기본 목록 (주요 대형주 + 자주 언급되는 종목)
+STOCK_NAME_TO_CODE_BASE = {
     # 대형주
     '삼성전자': '005930', 'SK하이닉스': '000660', 'NAVER': '035420', '카카오': '035720',
     'LG전자': '066570', '현대차': '005380', '기아': '000270', 'POSCO홀딩스': '005490',
@@ -134,6 +135,29 @@ STOCK_NAME_TO_CODE = {
     '미래에셋증권': '006800', '미래에셋': '006800',
     '한국금융지주': '071050', '한국금융': '071050',
 }
+
+# 확장 종목 리스트 로드 (네이버 금융에서 수집한 전체 종목)
+try:
+    import os
+    import sys
+    # stock_codes_extended.py 파일을 동적으로 import
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(current_dir)
+    sys.path.insert(0, parent_dir)
+    
+    try:
+        from stock_codes_extended import EXTENDED_STOCK_CODES
+        # 기본 목록과 확장 목록 병합 (기본 목록이 우선)
+        STOCK_NAME_TO_CODE = {**EXTENDED_STOCK_CODES, **STOCK_NAME_TO_CODE_BASE}
+        logger.info(f"확장 종목 리스트 로드 완료: {len(STOCK_NAME_TO_CODE)}개 종목")
+    except ImportError:
+        # 확장 파일이 없으면 기본 목록만 사용
+        STOCK_NAME_TO_CODE = STOCK_NAME_TO_CODE_BASE
+        logger.warning("확장 종목 리스트 없음, 기본 목록 사용")
+except Exception as e:
+    STOCK_NAME_TO_CODE = STOCK_NAME_TO_CODE_BASE
+    logger.error(f"종목 리스트 로드 오류: {e}")
+
 
 
 class BaseCrawler(ABC):
