@@ -54,3 +54,4 @@ config.yaml
 *.tmp
 temp/
 
+scripts/price_cache.pkl
