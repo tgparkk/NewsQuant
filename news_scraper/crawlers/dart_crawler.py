@@ -8,6 +8,7 @@ import logging
 from typing import List, Dict, Optional
 from datetime import datetime
 from ..base_crawler import BaseCrawler
+from ..config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +17,8 @@ class DARTCrawler(BaseCrawler):
     
     def __init__(self, api_key: Optional[str] = None):
         super().__init__(source_name="dart")
-        # 전달받은 API 키 사용
-        self.api_key = api_key or "bb67ad478f75dd345fd10bd0234205d5917f5e4a"
+        # config.yaml → 환경 변수 → 인자 순으로 API 키 결정
+        self.api_key = api_key or get_config("dart.api_key", "")
         self.base_url = "https://opendart.fss.or.kr/api/list.json"
 
     def crawl_news_list(self, max_pages: int = 1) -> List[Dict]:

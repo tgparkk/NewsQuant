@@ -1,11 +1,17 @@
 """
 뉴스 감성 분석 모듈
 키워드 기반 감성 분석 및 점수 계산
+
+개선사항 (2026-02-08):
+- 부정어(negation) 처리 추가: 감성 키워드 근처의 부정어로 극성 반전
+- 복합 표현 사전 추가: "상승세 꺾여" → 부정, "하락 우려 해소" → 긍정
+- 감성 점수 덮어쓰기 버그 수정: ratio 계산 결과가 0일 때만 fallback 적용
+- overall_score 가중치 공식 문서화
 """
 
 import re
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
@@ -65,6 +71,52 @@ class SentimentAnalyzer:
     # 강력한 악재 (가중치 높음)
     STRONG_NEGATIVE = ['상장폐지', '횡령', '배임', '영업이익 급감', '임상 실패', '부도', '하한가']
     
+    # 복합 표현 사전: (표현, 감성) - 개별 키워드보다 우선 적용
+    COMPOUND_EXPRESSIONS = [
+        # 긍정 복합 표현 (부정적 키워드가 포함되지만 전체적으로 긍정)
+        ('하락 우려 해소', 1),
+        ('우려 해소', 1),
+        ('우려 불식', 1),
+        ('부진 탈출', 1),
+        ('적자 탈출', 1),
+        ('하락세 반등', 1),
+        ('하락세에서 반등', 1),
+        ('약세 탈피', 1),
+        ('손실 만회', 1),
+        ('위기 극복', 1),
+        ('리스크 해소', 1),
+        ('불확실성 해소', 1),
+        ('매도세 진정', 1),
+        ('하락 제한적', 1),
+        # 부정 복합 표현 (긍정적 키워드가 포함되지만 전체적으로 부정)
+        ('상승세 꺾여', -1),
+        ('상승세 꺾이', -1),
+        ('상승 기대 꺾', -1),
+        ('성장 둔화', -1),
+        ('성장세 둔화', -1),
+        ('회복 지연', -1),
+        ('반등 실패', -1),
+        ('기대 이하', -1),
+        ('기대에 못 미치', -1),
+        ('기대 못 미치', -1),
+        ('호재 소진', -1),
+        ('강세 꺾여', -1),
+        ('강세 꺾이', -1),
+        ('상승 제한적', -1),
+        ('개선 더뎌', -1),
+        ('회복 더뎌', -1),
+        ('수주 감소', -1),
+    ]
+    
+    # 부정어 리스트 (감성 극성을 반전시키는 단어들)
+    NEGATION_WORDS = [
+        '안', '못', '없', '아닌', '않', '꺾', '불', '미',
+        '무산', '철회', '취소', '중단', '포기', '실패',
+    ]
+    
+    # 부정어 감지 윈도우 (키워드 앞 N 어절 이내에 부정어가 있으면 반전)
+    NEGATION_WINDOW = 2
+    
     # 중요 키워드 (뉴스 중요도 상승)
     IMPORTANCE_KEYWORDS = [
         '실적 발표', '분기 실적', '연간 실적', '공시', '공시사항',
@@ -104,9 +156,68 @@ class SentimentAnalyzer:
         '유통': 0.7,
     }
     
+    def _check_negation(self, text: str, keyword: str, keyword_pos: int) -> bool:
+        """
+        키워드 근처에 부정어가 있는지 확인
+        
+        Args:
+            text: 전체 텍스트
+            keyword: 감성 키워드
+            keyword_pos: 키워드의 시작 위치 (text 내 인덱스)
+        
+        Returns:
+            부정어가 근처에 있으면 True
+        """
+        # 키워드 앞쪽 텍스트에서 어절 단위로 부정어 탐색
+        prefix = text[:keyword_pos]
+        # 앞쪽 어절들 추출 (최대 NEGATION_WINDOW개)
+        words_before = prefix.split()
+        words_to_check = words_before[-self.NEGATION_WINDOW:] if words_before else []
+        
+        for word in words_to_check:
+            for neg in self.NEGATION_WORDS:
+                if neg in word:
+                    return True
+        return False
+    
+    def _count_with_negation(self, text: str, keywords: List[str]) -> Tuple[int, int]:
+        """
+        부정어를 고려하여 키워드 카운트
+        
+        Args:
+            text: 분석할 텍스트
+            keywords: 감성 키워드 리스트
+        
+        Returns:
+            (정상 카운트, 부정어에 의해 반전된 카운트) 튜플
+        """
+        normal_count = 0
+        negated_count = 0
+        
+        for keyword in keywords:
+            # 키워드의 모든 출현 위치 찾기
+            start = 0
+            while True:
+                pos = text.find(keyword, start)
+                if pos == -1:
+                    break
+                if self._check_negation(text, keyword, pos):
+                    negated_count += 1
+                else:
+                    normal_count += 1
+                start = pos + len(keyword)
+        
+        return normal_count, negated_count
+    
     def calculate_sentiment_score(self, text: str) -> float:
         """
         감성 점수 계산 (-1.0 ~ +1.0)
+        
+        알고리즘:
+        1. 복합 표현 먼저 매칭 (개별 키워드보다 우선)
+        2. 부정어를 고려한 긍정/부정 키워드 카운트
+        3. 비율 기반 점수 계산
+        4. ratio 계산이 0일 때만 fallback 적용
         
         Args:
             text: 분석할 텍스트 (제목 + 본문)
@@ -119,28 +230,52 @@ class SentimentAnalyzer:
         
         text_lower = text.lower()
         
-        # 긍정/부정 키워드 카운트
-        positive_count = sum(1 for keyword in self.POSITIVE_KEYWORDS if keyword in text_lower)
-        negative_count = sum(1 for keyword in self.NEGATIVE_KEYWORDS if keyword in text_lower)
+        # 1단계: 복합 표현 매칭 (우선순위 높음)
+        compound_score = 0
+        compound_matched = set()  # 매칭된 복합 표현에 포함된 키워드 추적
+        for expr, sentiment in self.COMPOUND_EXPRESSIONS:
+            if expr in text_lower:
+                compound_score += sentiment
+                compound_matched.add(expr)
         
-        # 부정 키워드가 더 많으면 부정 점수
+        # 2단계: 부정어를 고려한 키워드 카운트
+        # 복합 표현에 매칭된 부분은 개별 키워드 카운트에서 제외하기 위해
+        # 텍스트에서 복합 표현을 제거한 버전 사용
+        text_for_keywords = text_lower
+        for expr, _ in self.COMPOUND_EXPRESSIONS:
+            if expr in text_for_keywords:
+                text_for_keywords = text_for_keywords.replace(expr, ' ')
+        
+        # 긍정 키워드: 정상 매칭 = 긍정, 부정어+긍정 = 부정
+        pos_normal, pos_negated = self._count_with_negation(text_for_keywords, self.POSITIVE_KEYWORDS)
+        # 부정 키워드: 정상 매칭 = 부정, 부정어+부정 = 긍정
+        neg_normal, neg_negated = self._count_with_negation(text_for_keywords, self.NEGATIVE_KEYWORDS)
+        
+        # 실질적 긍정/부정 카운트 (부정어 반전 적용)
+        positive_count = pos_normal + neg_negated  # 긍정키워드 + 부정어로 반전된 부정키워드
+        negative_count = neg_normal + pos_negated  # 부정키워드 + 부정어로 반전된 긍정키워드
+        
+        # 복합 표현 점수 반영
+        if compound_score > 0:
+            positive_count += abs(compound_score)
+        elif compound_score < 0:
+            negative_count += abs(compound_score)
+        
+        # 3단계: 비율 기반 점수 계산
         if negative_count > positive_count:
-            # 부정 점수: -1.0 ~ 0.0
             score = -min(1.0, negative_count / max(1, positive_count + 1))
         elif positive_count > negative_count:
-            # 긍정 점수: 0.0 ~ +1.0
             score = min(1.0, positive_count / max(1, negative_count + 1))
         else:
-            # 동일하거나 없으면 중립
             score = 0.0
         
-        # 부정 키워드가 있으면 약간 감점
-        if negative_count > 0 and positive_count == 0:
-            score = -0.5
-        
-        # 긍정 키워드만 있으면 약간 가점
-        if positive_count > 0 and negative_count == 0:
-            score = 0.5
+        # 4단계: fallback — ratio 계산이 0인 경우에만 적용
+        # (긍정/부정 키워드가 동수이지만 한쪽만 있는 경우)
+        if score == 0.0:
+            if negative_count > 0 and positive_count == 0:
+                score = -0.5
+            elif positive_count > 0 and negative_count == 0:
+                score = 0.5
         
         # 점수 정규화 (-1.0 ~ +1.0)
         return max(-1.0, min(1.0, score))
@@ -148,6 +283,11 @@ class SentimentAnalyzer:
     def calculate_importance_score(self, text: str, source: str, category: str) -> float:
         """
         중요도 점수 계산 (0.0 ~ 1.0)
+        
+        공식: keyword_score * 0.4 + source_score * 0.3 + category_weight * 0.3
+        - keyword_score: 중요 키워드 개수 × 0.2 (최대 1.0, 즉 5개 이상이면 만점)
+        - source_score: 출처별 신뢰도 (0.5~1.0)
+        - category_weight: 카테고리별 가중치 (0.5~1.0)
         
         Args:
             text: 분석할 텍스트
@@ -172,7 +312,7 @@ class SentimentAnalyzer:
         category_weight = self.CATEGORY_WEIGHT.get(category, 0.5)
         
         # 중요도 계산
-        keyword_score = min(1.0, importance_count * 0.2)  # 키워드당 0.2점, 최대 1.0
+        keyword_score = min(1.0, importance_count * 0.2)  # 키워드당 0.2점, 최대 1.0 (5개 이상)
         importance = (keyword_score * 0.4 + source_score * 0.3 + category_weight * 0.3)
         
         return min(1.0, importance)
@@ -255,12 +395,25 @@ class SentimentAnalyzer:
     def analyze_news(self, news_data: Dict) -> Dict:
         """
         뉴스 전체 분석 및 점수 계산 (고도화 버전)
+        
+        종합 점수(overall_score) 공식:
+            overall_score = sentiment * 0.4 + importance * 0.3 + impact * 0.2 + timeliness * 0.1
+        
+        - sentiment (-1.0~1.0): 감성 점수. 제목 70% + 본문 30% 가중 평균.
+          강력 호재/악재 키워드 발견 시 ±0.3 보너스.
+        - importance (0.0~1.0): 중요도. 키워드 40% + 출처 신뢰도 30% + 카테고리 30%.
+          제목에 종목명 포함 시 +0.2 보너스.
+        - impact (0.0~1.0): 영향도. 키워드 40% + 관련종목수 30% + 텍스트길이 30%.
+        - timeliness (0.0~1.0): 실시간성. 24h 이내=1.0, 48h=0.5, 1주=0.2, 이상=0.1.
+        
+        참고: overall_score 범위는 sentiment이 음수일 수 있으므로 -0.4 ~ 1.0 범위.
+        양수일수록 긍정적+중요한 뉴스, 음수면 부정적 뉴스.
         """
         title = news_data.get('title', '')
         content = news_data.get('content', '')
         
         # 1. 감성 점수 계산 (제목 가중치 부여)
-        # 제목은 본문보다 3배 더 중요하게 처리
+        # 제목은 본문보다 더 중요하게 처리 (70:30)
         title_sentiment = self.calculate_sentiment_score(title)
         content_sentiment = self.calculate_sentiment_score(content)
         
@@ -304,6 +457,3 @@ class SentimentAnalyzer:
         news_data['overall_score'] = round(overall_score, 3)
         
         return news_data
-
-
-

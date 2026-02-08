@@ -127,6 +127,31 @@ class NewsDatabase:
         conn.close()
         logger.info(f"데이터베이스 초기화 완료: {self.db_path}")
     
+    @staticmethod
+    def _ensure_utf8(text):
+        """문자열이 올바른 UTF-8인지 확인하고 정리"""
+        if not text:
+            return text
+        if isinstance(text, bytes):
+            for encoding in ['utf-8', 'euc-kr', 'cp949', 'latin1']:
+                try:
+                    return text.decode(encoding, errors='strict')
+                except (UnicodeDecodeError, UnicodeError):
+                    continue
+            return text.decode('utf-8', errors='replace')
+        try:
+            if any(ord(c) > 0x7F and ord(c) < 0x100 for c in text):
+                for encoding in ['euc-kr', 'cp949']:
+                    try:
+                        recovered = text.encode('latin1').decode(encoding)
+                        if any('\uac00' <= char <= '\ud7a3' for char in recovered):
+                            return recovered
+                    except:
+                        continue
+        except:
+            pass
+        return text
+
     def insert_news(self, news_data: Dict) -> bool:
         """
         뉴스 데이터 삽입
@@ -252,7 +277,7 @@ class NewsDatabase:
     
     def insert_news_batch(self, news_list: List[Dict]) -> int:
         """
-        여러 뉴스 데이터 일괄 삽입
+        여러 뉴스 데이터 일괄 삽입 (단일 트랜잭션)
         
         Args:
             news_list: 뉴스 데이터 리스트
@@ -260,10 +285,66 @@ class NewsDatabase:
         Returns:
             성공적으로 삽입된 뉴스 개수
         """
+        if not news_list:
+            return 0
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
         success_count = 0
-        for news_data in news_list:
-            if self.insert_news(news_data):
-                success_count += 1
+
+        try:
+            for news_data in news_list:
+                try:
+                    title = self._ensure_utf8(news_data.get('title'))
+                    content = self._ensure_utf8(news_data.get('content', ''))
+                    category = self._ensure_utf8(news_data.get('category', ''))
+                    related_stocks = self._ensure_utf8(news_data.get('related_stocks', ''))
+                    news_id = news_data.get('news_id')
+
+                    cursor.execute("SELECT id, duplicate_count FROM news WHERE news_id = ?", (news_id,))
+                    existing = cursor.fetchone()
+
+                    if existing:
+                        new_count = existing[1] + 1
+                        cursor.execute(
+                            "UPDATE news SET duplicate_count = ?, updated_at = ? WHERE news_id = ?",
+                            (new_count, datetime.now().isoformat(), news_id),
+                        )
+                    else:
+                        cursor.execute("""
+                            INSERT INTO news 
+                            (news_id, title, content, published_at, source, category,
+                             url, related_stocks, sentiment_score, importance_score,
+                             impact_score, timeliness_score, overall_score, duplicate_count, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            news_id, title, content,
+                            news_data.get('published_at'),
+                            news_data.get('source'),
+                            category,
+                            news_data.get('url'),
+                            related_stocks,
+                            news_data.get('sentiment_score'),
+                            news_data.get('importance_score'),
+                            news_data.get('impact_score'),
+                            news_data.get('timeliness_score'),
+                            news_data.get('overall_score'),
+                            1,
+                            datetime.now().isoformat(),
+                        ))
+                    success_count += 1
+                except sqlite3.IntegrityError as e:
+                    logger.debug(f"중복 뉴스: {news_data.get('news_id')} - {e}")
+                except Exception as e:
+                    logger.error(f"뉴스 삽입 오류: {e}")
+
+            conn.commit()
+        except Exception as e:
+            logger.error(f"배치 삽입 트랜잭션 오류: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
+
         return success_count
     
     def get_news_by_date_range(self, start_date: str, end_date: str, 

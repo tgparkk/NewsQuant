@@ -1,0 +1,15 @@
+database:
+  path: "news_data.db"
+
+api:
+  host: "127.0.0.1"
+  port: 8000
+  cors_origins: ["http://localhost:3000"]
+
+dart:
+  api_key: "${DART_API_KEY}"  # Set DART_API_KEY environment variable or replace this
+
+crawling:
+  market_hours_interval: 60      # seconds
+  after_hours_interval: 300
+  weekend_interval: 1800

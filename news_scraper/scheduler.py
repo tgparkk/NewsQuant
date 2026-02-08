@@ -4,8 +4,9 @@
 """
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from datetime import datetime, time as dt_time, timedelta
-from typing import List
+from typing import List, Tuple
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 import pytz
@@ -71,36 +72,76 @@ class NewsScheduler:
         
         return market_open <= current_time <= market_close
     
+    # 병렬 크롤링 설정
+    MAX_WORKERS = 4           # 최대 동시 크롤러 수
+    CRAWLER_TIMEOUT = 300     # 크롤러당 타임아웃 (5분, 초 단위)
+    
+    def _run_single_crawler(self, crawler) -> Tuple[str, List, Optional[str]]:
+        """
+        단일 크롤러 실행 (ThreadPoolExecutor에서 호출)
+        
+        Returns:
+            (source_name, news_list, error_message) 튜플
+        """
+        try:
+            logger.info(f"[{crawler.source_name}] 크롤링 시작...")
+            news_list = crawler.crawl_news_list(max_pages=3)
+            return (crawler.source_name, news_list or [], None)
+        except Exception as e:
+            logger.error(f"[{crawler.source_name}] 크롤링 오류: {e}", exc_info=True)
+            return (crawler.source_name, [], str(e))
+    
     def collect_all_news(self):
-        """모든 크롤러로 뉴스 수집"""
+        """모든 크롤러로 뉴스 병렬 수집"""
         logger.info("=" * 50)
-        logger.info(f"뉴스 수집 시작: {datetime.now(pytz.timezone('Asia/Seoul'))}")
+        logger.info(f"뉴스 수집 시작 (병렬, max_workers={self.MAX_WORKERS}): "
+                     f"{datetime.now(pytz.timezone('Asia/Seoul'))}")
         
         total_news_count = 0
         
-        for crawler in self.crawlers:
-            try:
-                logger.info(f"[{crawler.source_name}] 크롤링 시작...")
-                
-                # 뉴스 목록 크롤링
-                news_list = crawler.crawl_news_list(max_pages=3)  # 각 크롤러당 최대 3페이지
-                
-                if news_list:
-                    # 감성 분석 및 점수 계산 (모든 뉴스에 대해 강제 적용)
+        # 크롤러들을 병렬로 실행
+        with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as executor:
+            future_to_crawler = {
+                executor.submit(self._run_single_crawler, crawler): crawler
+                for crawler in self.crawlers
+            }
+            
+            for future in as_completed(future_to_crawler, timeout=self.CRAWLER_TIMEOUT + 30):
+                crawler = future_to_crawler[future]
+                try:
+                    source_name, news_list, error_msg = future.result(timeout=self.CRAWLER_TIMEOUT)
+                    
+                    if error_msg:
+                        self.db.log_collection(
+                            source=source_name,
+                            news_count=0,
+                            status="error",
+                            error_message=error_msg
+                        )
+                        continue
+                    
+                    if not news_list:
+                        logger.warning(f"[{source_name}] 수집된 뉴스가 없습니다.")
+                        self.db.log_collection(
+                            source=source_name,
+                            news_count=0,
+                            status="success",
+                            error_message="수집된 뉴스 없음"
+                        )
+                        continue
+                    
+                    # 감성 분석 및 점수 계산
                     analyzed_news_list = []
                     for news in news_list:
                         try:
-                            # 제목이나 내용이 없어도 기본값으로 분석 시도
                             if not news.get('title'):
                                 news['title'] = ''
                             if not news.get('content'):
                                 news['content'] = ''
-                            
                             analyzed_news = self.sentiment_analyzer.analyze_news(news)
                             analyzed_news_list.append(analyzed_news)
                         except Exception as e:
-                            logger.warning(f"[{crawler.source_name}] 감성 분석 오류: {e}")
-                            # 분석 실패 시 기본값 설정
+                            logger.warning(f"[{source_name}] 감성 분석 오류: {e}")
                             news['sentiment_score'] = 0.0
                             news['importance_score'] = 0.0
                             news['impact_score'] = 0.0
@@ -112,31 +153,31 @@ class NewsScheduler:
                     inserted_count = self.db.insert_news_batch(analyzed_news_list)
                     total_news_count += inserted_count
                     
-                    # 수집 로그 기록
                     self.db.log_collection(
-                        source=crawler.source_name,
+                        source=source_name,
                         news_count=inserted_count,
                         status="success"
                     )
+                    logger.info(f"[{source_name}] {inserted_count}개 뉴스 수집 완료")
                     
-                    logger.info(f"[{crawler.source_name}] {inserted_count}개 뉴스 수집 완료")
-                else:
-                    logger.warning(f"[{crawler.source_name}] 수집된 뉴스가 없습니다.")
+                except TimeoutError:
+                    source_name = crawler.source_name
+                    logger.error(f"[{source_name}] 크롤링 타임아웃 ({self.CRAWLER_TIMEOUT}초)")
                     self.db.log_collection(
-                        source=crawler.source_name,
+                        source=source_name,
                         news_count=0,
-                        status="success",
-                        error_message="수집된 뉴스 없음"
+                        status="error",
+                        error_message=f"타임아웃 ({self.CRAWLER_TIMEOUT}초)"
                     )
-                    
-            except Exception as e:
-                logger.error(f"[{crawler.source_name}] 크롤링 오류: {e}", exc_info=True)
-                self.db.log_collection(
-                    source=crawler.source_name,
-                    news_count=0,
-                    status="error",
-                    error_message=str(e)
-                )
+                except Exception as e:
+                    source_name = crawler.source_name
+                    logger.error(f"[{source_name}] 크롤링 처리 오류: {e}", exc_info=True)
+                    self.db.log_collection(
+                        source=source_name,
+                        news_count=0,
+                        status="error",
+                        error_message=str(e)
+                    )
         
         logger.info(f"전체 뉴스 수집 완료: 총 {total_news_count}개")
         logger.info("=" * 50)

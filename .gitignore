@@ -47,6 +47,7 @@ Thumbs.db
 
 # Configuration
 config.json
+config.yaml
 .env
 
 # Temporary files
