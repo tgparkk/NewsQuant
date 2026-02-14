@@ -30,7 +30,7 @@ class MKNewsCrawler(BaseCrawler):
         # 최신 매일경제 섹션 URL 구조
         sections = [
             {'url': 'https://www.mk.co.kr/news/economy', 'name': '경제'},
-            {'url': 'https://www.mk.co.kr/news/finance', 'name': '금융'},
+            # {'url': 'https://www.mk.co.kr/news/finance', 'name': '금융'},  # 비활성화: 404 오류 (URL 변경됨)
             {'url': 'https://www.mk.co.kr/news/stock', 'name': '증시'}
         ]
         

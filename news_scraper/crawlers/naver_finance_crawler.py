@@ -25,28 +25,29 @@ class NaverFinanceCrawler(BaseCrawler):
     def crawl_news_list(self, max_pages: int = 5) -> List[Dict]:
         """뉴스 목록 크롤링"""
         news_list = []
-        
+        global_seen_urls = set()  # 전체 섹션/페이지에 걸친 URL 중복 제거
+
         # 네이버 금융 뉴스 섹션들
         sections = [
             {'url': 'https://finance.naver.com/news/news_list.naver?mode=LSS2D&section_id=101&section_id2=258', 'name': '증시'},
             {'url': 'https://finance.naver.com/news/news_list.naver?mode=LSS2D&section_id=101&section_id2=259', 'name': '경제'},
             {'url': 'https://finance.naver.com/news/news_list.naver?mode=LSS2D&section_id=101&section_id2=260', 'name': '산업'}
         ]
-        
+
         for section in sections:
             for page in range(1, max_pages + 1):
                 try:
                     url = f"{section['url']}&page={page}"
                     soup = self.fetch_page(url)
-                    
+
                     if not soup:
                         continue
-                    
+
                     # 네이버 금융은 a 태그로 뉴스 링크를 직접 찾는 방식이 효과적
                     # 다양한 뉴스 링크 패턴 찾기
                     all_links = soup.find_all('a', href=True)
                     news_links = []
-                    seen_urls = set()  # 중복 제거용
+                    seen_urls = set()  # 페이지 내 중복 제거용
                     
                     for link in all_links:
                         href = link.get('href', '')
@@ -68,10 +69,11 @@ class NaverFinanceCrawler(BaseCrawler):
                         else:
                             full_url = urljoin(self.BASE_URL, href)
                         
-                        # 중복 제거
-                        if full_url in seen_urls:
+                        # 중복 제거 (페이지 내 + 전체 섹션 간)
+                        if full_url in seen_urls or full_url in global_seen_urls:
                             continue
                         seen_urls.add(full_url)
+                        global_seen_urls.add(full_url)
                         
                         # 제목 추출 - 링크 자체의 텍스트만 사용 (부모에서 찾지 않음)
                         title = self.extract_text(link)

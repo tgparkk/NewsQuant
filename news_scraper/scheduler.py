@@ -6,7 +6,7 @@
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from datetime import datetime, time as dt_time, timedelta
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 import pytz
@@ -105,79 +105,94 @@ class NewsScheduler:
                 executor.submit(self._run_single_crawler, crawler): crawler
                 for crawler in self.crawlers
             }
-            
-            for future in as_completed(future_to_crawler, timeout=self.CRAWLER_TIMEOUT + 30):
-                crawler = future_to_crawler[future]
-                try:
-                    source_name, news_list, error_msg = future.result(timeout=self.CRAWLER_TIMEOUT)
-                    
-                    if error_msg:
+
+            try:
+                for future in as_completed(future_to_crawler, timeout=self.CRAWLER_TIMEOUT + 30):
+                    crawler = future_to_crawler[future]
+                    try:
+                        source_name, news_list, error_msg = future.result(timeout=self.CRAWLER_TIMEOUT)
+
+                        if error_msg:
+                            self.db.log_collection(
+                                source=source_name,
+                                news_count=0,
+                                status="error",
+                                error_message=error_msg
+                            )
+                            continue
+
+                        if not news_list:
+                            logger.warning(f"[{source_name}] 수집된 뉴스가 없습니다.")
+                            self.db.log_collection(
+                                source=source_name,
+                                news_count=0,
+                                status="success",
+                                error_message="수집된 뉴스 없음"
+                            )
+                            continue
+
+                        # 감성 분석 및 점수 계산
+                        analyzed_news_list = []
+                        for news in news_list:
+                            try:
+                                if not news.get('title'):
+                                    news['title'] = ''
+                                if not news.get('content'):
+                                    news['content'] = ''
+                                analyzed_news = self.sentiment_analyzer.analyze_news(news)
+                                analyzed_news_list.append(analyzed_news)
+                            except Exception as e:
+                                logger.warning(f"[{source_name}] 감성 분석 오류: {e}")
+                                news['sentiment_score'] = 0.0
+                                news['importance_score'] = 0.0
+                                news['impact_score'] = 0.0
+                                news['timeliness_score'] = 0.5
+                                news['overall_score'] = 0.0
+                                analyzed_news_list.append(news)
+
+                        # 데이터베이스에 저장
+                        inserted_count = self.db.insert_news_batch(analyzed_news_list)
+                        total_news_count += inserted_count
+
+                        self.db.log_collection(
+                            source=source_name,
+                            news_count=inserted_count,
+                            status="success"
+                        )
+                        logger.info(f"[{source_name}] {inserted_count}개 뉴스 수집 완료")
+
+                    except TimeoutError:
+                        source_name = crawler.source_name
+                        logger.error(f"[{source_name}] 크롤링 타임아웃 ({self.CRAWLER_TIMEOUT}초)")
                         self.db.log_collection(
                             source=source_name,
                             news_count=0,
                             status="error",
-                            error_message=error_msg
+                            error_message=f"타임아웃 ({self.CRAWLER_TIMEOUT}초)"
                         )
-                        continue
-                    
-                    if not news_list:
-                        logger.warning(f"[{source_name}] 수집된 뉴스가 없습니다.")
+                    except Exception as e:
+                        source_name = crawler.source_name
+                        logger.error(f"[{source_name}] 크롤링 처리 오류: {e}", exc_info=True)
                         self.db.log_collection(
                             source=source_name,
                             news_count=0,
-                            status="success",
-                            error_message="수집된 뉴스 없음"
+                            status="error",
+                            error_message=str(e)
                         )
-                        continue
-                    
-                    # 감성 분석 및 점수 계산
-                    analyzed_news_list = []
-                    for news in news_list:
-                        try:
-                            if not news.get('title'):
-                                news['title'] = ''
-                            if not news.get('content'):
-                                news['content'] = ''
-                            analyzed_news = self.sentiment_analyzer.analyze_news(news)
-                            analyzed_news_list.append(analyzed_news)
-                        except Exception as e:
-                            logger.warning(f"[{source_name}] 감성 분석 오류: {e}")
-                            news['sentiment_score'] = 0.0
-                            news['importance_score'] = 0.0
-                            news['impact_score'] = 0.0
-                            news['timeliness_score'] = 0.5
-                            news['overall_score'] = 0.0
-                            analyzed_news_list.append(news)
-                    
-                    # 데이터베이스에 저장
-                    inserted_count = self.db.insert_news_batch(analyzed_news_list)
-                    total_news_count += inserted_count
-                    
-                    self.db.log_collection(
-                        source=source_name,
-                        news_count=inserted_count,
-                        status="success"
-                    )
-                    logger.info(f"[{source_name}] {inserted_count}개 뉴스 수집 완료")
-                    
-                except TimeoutError:
-                    source_name = crawler.source_name
-                    logger.error(f"[{source_name}] 크롤링 타임아웃 ({self.CRAWLER_TIMEOUT}초)")
-                    self.db.log_collection(
-                        source=source_name,
-                        news_count=0,
-                        status="error",
-                        error_message=f"타임아웃 ({self.CRAWLER_TIMEOUT}초)"
-                    )
-                except Exception as e:
-                    source_name = crawler.source_name
-                    logger.error(f"[{source_name}] 크롤링 처리 오류: {e}", exc_info=True)
-                    self.db.log_collection(
-                        source=source_name,
-                        news_count=0,
-                        status="error",
-                        error_message=str(e)
-                    )
+            except TimeoutError:
+                # as_completed 전체 타임아웃 - 미완료 크롤러만 오류 기록하고 계속 진행
+                logger.warning(f"병렬 크롤링 전체 타임아웃 ({self.CRAWLER_TIMEOUT + 30}초) - 미완료 크롤러 확인 중")
+                for future, crawler in future_to_crawler.items():
+                    if not future.done():
+                        source_name = crawler.source_name
+                        logger.error(f"[{source_name}] 전체 타임아웃으로 미완료")
+                        self.db.log_collection(
+                            source=source_name,
+                            news_count=0,
+                            status="error",
+                            error_message=f"전체 타임아웃 ({self.CRAWLER_TIMEOUT + 30}초)"
+                        )
+                        future.cancel()
         
         logger.info(f"전체 뉴스 수집 완료: 총 {total_news_count}개")
         logger.info("=" * 50)
