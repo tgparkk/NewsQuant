@@ -414,15 +414,16 @@ class TradingAnalyzer:
                 ORDER BY d DESC
             """)
             rows = cursor.fetchall()
-            conn.close()
+            self.db._put_connection(conn)
 
             # 종목별 날짜별 카운트 집계
             stock_daily: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
             for d, rs in rows:
+                d_str = str(d)  # datetime.date → 문자열 변환
                 for code in rs.split(','):
                     code = code.strip()
                     if len(code) == 6 and code.isdigit():
-                        stock_daily[code][d] += 1
+                        stock_daily[code][d_str] += 1
 
             # 종목별 일평균 (최근 20일, 오늘 제외)
             for code, daily in stock_daily.items():

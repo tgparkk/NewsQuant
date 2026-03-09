@@ -15,6 +15,7 @@ from threading import Thread
 
 from ..database import NewsDatabase
 from ..trading_analyzer import TradingAnalyzer
+from ..market_predictor import MarketPredictor
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,9 @@ db = NewsDatabase()
 
 # 매매 분석기 인스턴스
 trading_analyzer = TradingAnalyzer()
+
+# 시장 예측기 인스턴스
+market_predictor = MarketPredictor()
 
 
 # 요청 모델
@@ -552,6 +556,91 @@ async def get_sell_candidates(
         })
     except Exception as e:
         logger.error(f"Error getting sell candidates: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== 시장 지수 예측 API ====================
+
+@app.get("/api/market/predict")
+async def predict_market_index(
+    hours: int = Query(24, ge=1, le=168, description="분석할 시간 범위 (1-168시간, 기본값: 24)"),
+):
+    """
+    KOSPI/KOSDAQ 지수 방향 예측
+
+    국내외 뉴스 감성 분석을 종합하여 시장 방향을 예측합니다.
+
+    - **hours**: 분석할 뉴스 시간 범위 (1-168시간, 기본값: 24)
+
+    반환값:
+    - prediction: 방향(up/down/neutral), 강도(strong/moderate/weak), 설명
+    - confidence: 예측 신뢰도 (0.0 ~ 1.0)
+    - combined_sentiment: 종합 감성 점수
+    - global_analysis: 글로벌 뉴스 분석
+    - domestic_analysis: 국내 뉴스 분석
+    - key_factors: 핵심 영향 요인
+    - summary: 사람이 읽기 쉬운 요약
+    """
+    try:
+        result = market_predictor.predict_with_summary(hours=hours)
+
+        return JSONResponse({
+            "success": True,
+            "data": result
+        })
+    except Exception as e:
+        logger.error(f"Error predicting market index: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/market/predict/summary")
+async def predict_market_summary(
+    hours: int = Query(24, ge=1, le=168, description="분석할 시간 범위"),
+):
+    """
+    KOSPI/KOSDAQ 예측 요약 (텍스트)
+
+    간단한 텍스트 요약만 반환합니다. 다른 시스템에서 빠르게 조회할 때 사용.
+    """
+    try:
+        result = market_predictor.predict_with_summary(hours=hours)
+
+        return JSONResponse({
+            "success": True,
+            "direction": result['prediction']['direction'],
+            "strength": result['prediction']['strength'],
+            "confidence": result['confidence'],
+            "summary": result.get('summary', ''),
+            "analysis_time": result['analysis_time'],
+        })
+    except Exception as e:
+        logger.error(f"Error getting market summary: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/market/global-sentiment")
+async def get_global_sentiment(
+    hours: int = Query(24, ge=1, le=168, description="분석할 시간 범위"),
+):
+    """
+    글로벌 뉴스 감성 분석 결과만 조회
+
+    해외 뉴스의 감성 점수, 카테고리별 분석, 핵심 테마를 반환합니다.
+    """
+    try:
+        result = market_predictor.predict_index(hours=hours)
+
+        return JSONResponse({
+            "success": True,
+            "data": {
+                "global_analysis": result['global_analysis'],
+                "key_factors": [f for f in result['key_factors'] if f['type'] == 'global'],
+                "market_phase": result['market_phase'],
+                "analysis_time": result['analysis_time'],
+            }
+        })
+    except Exception as e:
+        logger.error(f"Error getting global sentiment: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

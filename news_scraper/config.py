@@ -59,7 +59,13 @@ def load_config(config_path: Optional[str] = None) -> Dict:
     if not config_path.exists():
         logger.warning(f"config.yaml을 찾을 수 없습니다: {config_path}. 기본값을 사용합니다.")
         _config = {
-            "database": {"path": "news_data.db"},
+            "database": {
+                "host": "localhost",
+                "port": 5432,
+                "name": "newsquant",
+                "user": "postgres",
+                "password": "postgres",
+            },
             "api": {"host": "127.0.0.1", "port": 8000, "cors_origins": ["http://localhost:3000"]},
             "dart": {"api_key": ""},
             "crawling": {

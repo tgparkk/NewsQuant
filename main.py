@@ -49,21 +49,19 @@ def show_statistics():
 def main():
     """메인 함수"""
     print("=" * 60)
-    print("주식 뉴스 수집 시스템 v1.0")
+    print("주식 뉴스 수집 시스템 v2.0 (글로벌 + 지수 예측)")
     print("=" * 60)
     print("\n지원하는 뉴스 소스:")
-    print("  - 네이버 금융")
-    print("  - 한국거래소 공시")
-    print("  - 연합인포맥스")
-    print("  - 한국경제")
-    print("  - 매일경제")
+    print("  [국내] 네이버 금융, 한국거래소 공시, 한국경제, 매일경제")
+    print("  [글로벌] CNBC, MarketWatch, Investing.com, Google News")
     print("\n수집 주기:")
     print("  - 시장 운영 시간 (월~금 09:00~15:30): 1분마다")
     print("  - 시장 마감 후 (월~금 15:30~24:00): 5분마다")
     print("  - 주말/새벽: 30분마다")
     print("\nAPI 서버:")
-    print("  - REST API 제공: http://127.0.0.1:8000")
+    print("  - REST API: http://127.0.0.1:8000")
     print("  - API 문서: http://127.0.0.1:8000/docs")
+    print("  - 시장 예측: http://127.0.0.1:8000/api/market/predict")
     print("\n" + "=" * 60 + "\n")
     
     try:

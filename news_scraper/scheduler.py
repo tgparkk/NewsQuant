@@ -13,12 +13,14 @@ import pytz
 
 from .database import NewsDatabase
 from .sentiment_analyzer import SentimentAnalyzer
+from .english_sentiment_analyzer import EnglishSentimentAnalyzer
 from .crawlers.naver_finance_crawler import NaverFinanceCrawler
 from .crawlers.dart_crawler import DARTCrawler
 # from .crawlers.krx_crawler import KRXCrawler  # 비활성화: 접근 불가
 # from .crawlers.yonhap_crawler import YonhapCrawler  # 비활성화: 접근 불가
 from .crawlers.hankyung_crawler import HankyungCrawler
 from .crawlers.mk_crawler import MKNewsCrawler
+from .crawlers.global_news_crawler import GlobalNewsCrawler
 
 logger = logging.getLogger(__name__)
 
@@ -34,16 +36,25 @@ class NewsScheduler:
         self.db = NewsDatabase(db_path)
         self.scheduler = BlockingScheduler(timezone=pytz.timezone('Asia/Seoul'))
         self.sentiment_analyzer = SentimentAnalyzer()
-        
-        # 크롤러 리스트
+        self.english_sentiment_analyzer = EnglishSentimentAnalyzer()
+
+        # 크롤러 리스트 (국내 + 글로벌)
         self.crawlers = [
             NaverFinanceCrawler(),
             DARTCrawler(),
             # KRXCrawler(),  # 비활성화: 접근 불가 (404 오류)
             # YonhapCrawler(),  # 비활성화: 접근 불가 (400 오류)
             HankyungCrawler(),
-            MKNewsCrawler()
+            MKNewsCrawler(),
+            GlobalNewsCrawler(),  # 글로벌 뉴스 RSS 크롤러
         ]
+
+        # 글로벌 뉴스 출처 (영문 감성 분석기 사용)
+        self.global_sources = {
+            'global_news', 'cnbc', 'marketwatch', 'investing_com',
+            'google_news_finance', 'google_news_asia',
+            'google_news_trade', 'google_news_tech',
+        }
         
         # 마지막 수집 시간 추적
         self.last_collection_time = None
@@ -132,6 +143,10 @@ class NewsScheduler:
                             continue
 
                         # 감성 분석 및 점수 계산
+                        # 글로벌 뉴스는 영문 분석기, 국내 뉴스는 한글 분석기 사용
+                        is_global = source_name in self.global_sources
+                        analyzer = self.english_sentiment_analyzer if is_global else self.sentiment_analyzer
+
                         analyzed_news_list = []
                         for news in news_list:
                             try:
@@ -139,7 +154,7 @@ class NewsScheduler:
                                     news['title'] = ''
                                 if not news.get('content'):
                                     news['content'] = ''
-                                analyzed_news = self.sentiment_analyzer.analyze_news(news)
+                                analyzed_news = analyzer.analyze_news(news)
                                 analyzed_news_list.append(analyzed_news)
                             except Exception as e:
                                 logger.warning(f"[{source_name}] 감성 분석 오류: {e}")
