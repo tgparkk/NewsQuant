@@ -106,3 +106,50 @@ def load_sector_keywords(path: Optional[Path] = None) -> SectorKeywordDict:
     with open(p, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
     return parse_sector_keywords(data)
+
+
+def _find_ko(text: str, kws: Tuple[str, ...]) -> Optional[str]:
+    for kw in kws:
+        if kw.lower() in text:
+            return kw
+    return None
+
+
+def _find_en(text: str, entry: SectorEntry) -> Optional[str]:
+    for kw, pat in zip(entry.en, entry.en_patterns):
+        if pat.search(text):
+            return kw
+    return None
+
+
+def _excluded(entry: SectorEntry, title: str, body: str) -> bool:
+    for x in entry.exclude:
+        low = x.lower()
+        if low in title or low in body:
+            return True
+    return False
+
+
+def match_sectors(title: Optional[str], content: Optional[str], kwdict: SectorKeywordDict,
+                  body_chars: int = 2000) -> Dict[str, KeywordHit]:
+    """제목·본문(앞 body_chars 자)을 사전에 대고 섹터별 히트를 돌려준다.
+
+    - ko: 부분문자열(소문자화) · en: 단어경계(소문자화)
+    - 제목 히트(ROUTE_KW_TITLE) > 본문 히트(ROUTE_KW_BODY) — 섹터당 하나
+    - exclude 가 제목·본문 어디든 걸리면 그 섹터 귀속 취소
+    - 한 뉴스가 여러 섹터에 걸리면 전부 돌려준다
+    """
+    t = (title or "").lower()
+    b = (content or "")[:body_chars].lower()
+    hits: Dict[str, KeywordHit] = {}
+    for key, entry in kwdict.sectors.items():
+        if _excluded(entry, t, b):
+            continue
+        kw = _find_ko(t, entry.ko) or _find_en(t, entry)
+        if kw is not None:
+            hits[key] = KeywordHit(ROUTE_KW_TITLE, kw)
+            continue
+        kw = _find_ko(b, entry.ko) or _find_en(b, entry)
+        if kw is not None:
+            hits[key] = KeywordHit(ROUTE_KW_BODY, kw)
+    return hits
