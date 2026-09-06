@@ -102,14 +102,173 @@ class NewsScheduler:
             logger.error(f"[{crawler.source_name}] 크롤링 오류: {e}", exc_info=True)
             return (crawler.source_name, [], str(e))
     
+    def _handle_crawler_result(self, source_name: str, news_list: List,
+                               error_msg: Optional[str], recovered: bool = False) -> int:
+        """크롤러 결과 1건을 처리한다: 감성분석 -> insert_news_batch -> log_collection.
+
+        🔑 이 메서드는 한 번 호출될 때마다 log_collection 을 «정확히 한 줄» 남긴다.
+           (성공/무수확/오류 어느 분기로 가든 정확히 1회, 예외로 빠져나가지 않는다)
+           호출자는 future 하나당 이 메서드를 최대 1회만 부르면
+           「사이클당 소스당 한 줄」이 보장된다.
+
+        Args:
+            source_name: 크롤러 출처명
+            news_list:   수확물
+            error_msg:   크롤러 내부 오류 메시지 (없으면 None)
+            recovered:   전체 타임아웃 «후» 회수된 수확물인지 여부.
+                         True 면 로그/collection_log 에 「타임아웃 후 회수」로 표시한다.
+
+        Returns:
+            저장된 뉴스 건수
+        """
+        prefix = "[타임아웃 후 회수] " if recovered else ""
+
+        def _note(msg: Optional[str] = None) -> Optional[str]:
+            """회수분임을 collection_log 에 남기기 위한 error_message 조립"""
+            if not recovered:
+                return msg
+            return f"타임아웃 후 회수: {msg}" if msg else "타임아웃 후 회수"
+
+        if error_msg:
+            logger.error(f"{prefix}[{source_name}] 크롤링 오류: {error_msg}")
+            self.db.log_collection(
+                source=source_name,
+                news_count=0,
+                status="error",
+                error_message=_note(error_msg)
+            )
+            return 0
+
+        if not news_list:
+            logger.warning(f"{prefix}[{source_name}] 수집된 뉴스가 없습니다.")
+            self.db.log_collection(
+                source=source_name,
+                news_count=0,
+                status="success",
+                error_message=_note("수집된 뉴스 없음")
+            )
+            return 0
+
+        try:
+            # 감성 분석 및 점수 계산
+            # 글로벌 뉴스는 영문 분석기, 국내 뉴스는 한글 분석기 사용
+            is_global = source_name in self.global_sources
+            analyzer = self.english_sentiment_analyzer if is_global else self.sentiment_analyzer
+
+            analyzed_news_list = []
+            for news in news_list:
+                try:
+                    if not news.get('title'):
+                        news['title'] = ''
+                    if not news.get('content'):
+                        news['content'] = ''
+                    analyzed_news = analyzer.analyze_news(news)
+                    analyzed_news_list.append(analyzed_news)
+                except Exception as e:
+                    logger.warning(f"[{source_name}] 감성 분석 오류: {e}")
+                    news['sentiment_score'] = 0.0
+                    news['importance_score'] = 0.0
+                    news['impact_score'] = 0.0
+                    news['timeliness_score'] = 0.5
+                    news['overall_score'] = 0.0
+                    analyzed_news_list.append(news)
+
+            # 데이터베이스에 저장
+            inserted_count = self.db.insert_news_batch(analyzed_news_list)
+        except Exception as e:
+            logger.error(f"{prefix}[{source_name}] 저장 처리 오류: {e}", exc_info=True)
+            self.db.log_collection(
+                source=source_name,
+                news_count=0,
+                status="error",
+                error_message=_note(f"저장 처리 오류: {e}")
+            )
+            return 0
+
+        self.db.log_collection(
+            source=source_name,
+            news_count=inserted_count,
+            status="success",
+            error_message=_note()
+        )
+        logger.info(f"{prefix}[{source_name}] {inserted_count}개 뉴스 수집 완료")
+        return inserted_count
+
+    def _recover_pending_results(self, future_to_crawler: dict, logged_futures: set) -> int:
+        """전체 타임아웃 «후», executor shutdown(wait=True) 이 끝난 뒤 호출한다.
+
+        as_completed 전체 타임아웃은 for 루프를 통째로 이탈시키므로,
+        그 뒤에 완료된 크롤러의 result() 를 «아무도 읽지 않는다».
+        future.cancel() 은 이미 실행 중인 future 에 효과가 없어 크롤러는 끝까지 돌고,
+        with 블록이 닫히며 shutdown(wait=True) 가 그 완주를 기다린다.
+        => 그 시점엔 수확물이 «메모리에 이미 들어와 있다». 여기서 회수해 정상 경로로 저장한다.
+
+        타임아웃이 없었다면 미처리 future 가 없으므로 no-op 이다.
+
+        Returns:
+            회수하여 저장한 뉴스 건수
+        """
+        pending = [(f, c) for f, c in future_to_crawler.items() if f not in logged_futures]
+        if not pending:
+            return 0
+
+        logger.warning(f"타임아웃 후 수확물 회수 시도: {len(pending)}개 크롤러 "
+                       f"({', '.join(c.source_name for _, c in pending)})")
+
+        recovered_total = 0
+        for future, crawler in pending:
+            source_name = crawler.source_name
+            try:
+                if future.cancelled():
+                    # 워커를 못 잡아 «시작도 못 한» 크롤러 - 수확물이 존재하지 않는다.
+                    logger.error(f"[{source_name}] 전체 타임아웃 - 미실행 취소 (수확물 없음)")
+                    self.db.log_collection(
+                        source=source_name,
+                        news_count=0,
+                        status="error",
+                        error_message=f"전체 타임아웃 ({self.CRAWLER_TIMEOUT + 30}초) - 미실행 취소"
+                    )
+                elif not future.done():
+                    # shutdown(wait=True) 이후엔 도달하지 않아야 한다 (방어적 분기).
+                    logger.error(f"[{source_name}] shutdown 후에도 미완료 - 수확물 회수 불가")
+                    self.db.log_collection(
+                        source=source_name,
+                        news_count=0,
+                        status="error",
+                        error_message=f"전체 타임아웃 ({self.CRAWLER_TIMEOUT + 30}초) - 회수 실패(미완료)"
+                    )
+                else:
+                    src, news_list, error_msg = future.result(timeout=0)
+                    recovered_total += self._handle_crawler_result(
+                        src, news_list, error_msg, recovered=True
+                    )
+            except Exception as e:
+                logger.error(f"[{source_name}] 타임아웃 후 회수 처리 오류: {e}", exc_info=True)
+                self.db.log_collection(
+                    source=source_name,
+                    news_count=0,
+                    status="error",
+                    error_message=f"타임아웃 후 회수 실패: {e}"
+                )
+            finally:
+                logged_futures.add(future)
+
+        logger.warning(f"타임아웃 후 회수 완료: {recovered_total}개 뉴스 저장")
+        return recovered_total
+
     def collect_all_news(self):
         """모든 크롤러로 뉴스 병렬 수집"""
         logger.info("=" * 50)
         logger.info(f"뉴스 수집 시작 (병렬, max_workers={self.MAX_WORKERS}): "
                      f"{datetime.now(pytz.timezone('Asia/Seoul'))}")
-        
+
         total_news_count = 0
-        
+        future_to_crawler = {}
+        # 이 사이클에서 log_collection 을 «이미 한 줄» 남긴 future 집합.
+        # 크롤러(=소스)당 future 는 정확히 하나이므로, 이 집합이
+        # 「사이클당 소스당 collection_log 한 줄」을 보장하는 장치다.
+        logged_futures = set()
+
         # 크롤러들을 병렬로 실행
         with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as executor:
             future_to_crawler = {
@@ -122,60 +281,6 @@ class NewsScheduler:
                     crawler = future_to_crawler[future]
                     try:
                         source_name, news_list, error_msg = future.result(timeout=self.CRAWLER_TIMEOUT)
-
-                        if error_msg:
-                            self.db.log_collection(
-                                source=source_name,
-                                news_count=0,
-                                status="error",
-                                error_message=error_msg
-                            )
-                            continue
-
-                        if not news_list:
-                            logger.warning(f"[{source_name}] 수집된 뉴스가 없습니다.")
-                            self.db.log_collection(
-                                source=source_name,
-                                news_count=0,
-                                status="success",
-                                error_message="수집된 뉴스 없음"
-                            )
-                            continue
-
-                        # 감성 분석 및 점수 계산
-                        # 글로벌 뉴스는 영문 분석기, 국내 뉴스는 한글 분석기 사용
-                        is_global = source_name in self.global_sources
-                        analyzer = self.english_sentiment_analyzer if is_global else self.sentiment_analyzer
-
-                        analyzed_news_list = []
-                        for news in news_list:
-                            try:
-                                if not news.get('title'):
-                                    news['title'] = ''
-                                if not news.get('content'):
-                                    news['content'] = ''
-                                analyzed_news = analyzer.analyze_news(news)
-                                analyzed_news_list.append(analyzed_news)
-                            except Exception as e:
-                                logger.warning(f"[{source_name}] 감성 분석 오류: {e}")
-                                news['sentiment_score'] = 0.0
-                                news['importance_score'] = 0.0
-                                news['impact_score'] = 0.0
-                                news['timeliness_score'] = 0.5
-                                news['overall_score'] = 0.0
-                                analyzed_news_list.append(news)
-
-                        # 데이터베이스에 저장
-                        inserted_count = self.db.insert_news_batch(analyzed_news_list)
-                        total_news_count += inserted_count
-
-                        self.db.log_collection(
-                            source=source_name,
-                            news_count=inserted_count,
-                            status="success"
-                        )
-                        logger.info(f"[{source_name}] {inserted_count}개 뉴스 수집 완료")
-
                     except TimeoutError:
                         source_name = crawler.source_name
                         logger.error(f"[{source_name}] 크롤링 타임아웃 ({self.CRAWLER_TIMEOUT}초)")
@@ -194,21 +299,34 @@ class NewsScheduler:
                             status="error",
                             error_message=str(e)
                         )
+                    else:
+                        total_news_count += self._handle_crawler_result(
+                            source_name, news_list, error_msg
+                        )
+                    finally:
+                        logged_futures.add(future)
             except TimeoutError:
-                # as_completed 전체 타임아웃 - 미완료 크롤러만 오류 기록하고 계속 진행
+                # as_completed 전체 타임아웃 - for 루프를 통째로 이탈한다.
+                # 🔴 여기서 미완료 future 를 error 로 «확정하지 않는다».
+                #    실행 중인 크롤러는 cancel() 이 안 먹고 끝까지 완주하므로,
+                #    shutdown(wait=True) 이 끝난 뒤 _recover_pending_results() 에서
+                #    수확물을 회수하고 그때 한 줄만 기록한다.
                 logger.warning(f"병렬 크롤링 전체 타임아웃 ({self.CRAWLER_TIMEOUT + 30}초) - 미완료 크롤러 확인 중")
                 for future, crawler in future_to_crawler.items():
-                    if not future.done():
-                        source_name = crawler.source_name
-                        logger.error(f"[{source_name}] 전체 타임아웃으로 미완료")
-                        self.db.log_collection(
-                            source=source_name,
-                            news_count=0,
-                            status="error",
-                            error_message=f"전체 타임아웃 ({self.CRAWLER_TIMEOUT + 30}초)"
-                        )
-                        future.cancel()
-        
+                    if future in logged_futures:
+                        continue
+                    # cancel() 은 «아직 시작 안 한» future 에만 성공한다.
+                    # 실행 중이면 False 를 반환하고 크롤러는 계속 돈다.
+                    if future.cancel():
+                        logger.error(f"[{crawler.source_name}] 전체 타임아웃 - 미실행 취소")
+                    else:
+                        logger.warning(f"[{crawler.source_name}] 전체 타임아웃 시점에 실행 중 "
+                                       f"- shutdown 후 수확물 회수를 시도한다")
+        # ← with 종료 = shutdown(wait=True). 실행 중이던 크롤러가 여기서 완주한다.
+
+        # 타임아웃으로 버려질 뻔한 수확물을 회수한다 (타임아웃이 없었으면 no-op).
+        total_news_count += self._recover_pending_results(future_to_crawler, logged_futures)
+
         logger.info(f"전체 뉴스 수집 완료: 총 {total_news_count}개")
         logger.info("=" * 50)
     
