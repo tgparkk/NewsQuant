@@ -6,8 +6,8 @@ sectors:
   # ── 전자·반도체 ──────────────────────────────────────────
   "261":
     name: 반도체 제조업
-    ko: [반도체, 메모리 반도체, D램, 디램, 낸드, 파운드리, 웨이퍼, 시스템반도체]
-    en: [semiconductor, semiconductors, chip, chipmaker, chipmakers, DRAM, NAND, HBM, foundry, wafer]
+    ko: [반도체, 메모리 반도체, D램, 디램, 낸드, HBM, 파운드리, 웨이퍼, 시스템반도체]
+    en: [semiconductor, semiconductors, chip, chipmaker, chipmakers, DRAM, NAND, foundry, wafer]
     exclude: [반도체 ETF]
   "262":
     name: 전자부품 제조업

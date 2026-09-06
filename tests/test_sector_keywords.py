@@ -149,6 +149,7 @@ def test_shipped_dictionary_loads_and_has_49_sectors():
 def test_shipped_dictionary_smoke_matches():
     d = load_sector_keywords()
     assert "261" in match_sectors("SK하이닉스 HBM 증설", "", d)
+    assert match_sectors("SK하이닉스 HBM3E 양산 본격화", "", d)["261"].matched == "HBM"
     assert "612" not in match_sectors("KT&G 담배 판매 호조", "", d)          # exclude
     assert "311" in match_sectors("HD현대중공업 LNG선 3척 수주", "", d)
     assert "641" in match_sectors("Bank of Korea signals rate cut path", "", d)
