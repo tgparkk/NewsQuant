@@ -55,3 +55,6 @@ config.yaml
 temp/
 
 scripts/price_cache.pkl
+
+# superpowers SDD scratch (ledger/briefs/reports)
+.superpowers/
