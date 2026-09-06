@@ -1,0 +1,211 @@
+# 섹터 키워드 사전 (스펙 B §4.2) — KSIC 3자리 → 한/영 키워드
+# 규칙: 키는 따옴표 3자리 · ko 는 부분문자열 · en 은 단어경계 · exclude 걸리면 귀속 취소
+# 변경은 커밋으로만. version 을 올려라 (sector_news_score.dict_version 에 기록된다).
+version: "2026-09-06.1"
+sectors:
+  # ── 전자·반도체 ──────────────────────────────────────────
+  "261":
+    name: 반도체 제조업
+    ko: [반도체, 메모리 반도체, D램, 디램, 낸드, 파운드리, 웨이퍼, 시스템반도체]
+    en: [semiconductor, semiconductors, chip, chipmaker, chipmakers, DRAM, NAND, HBM, foundry, wafer]
+    exclude: [반도체 ETF]
+  "262":
+    name: 전자부품 제조업
+    ko: [전자부품, MLCC, 기판, 디스플레이, LCD, 카메라모듈, 적층세라믹]
+    en: [display, OLED, PCB, electronic components]
+  "263":
+    name: 컴퓨터 및 주변장치 제조업
+    ko: [서버, 데이터센터, 스토리지, 노트북]
+    en: [server, servers, data center, datacenter, SSD, storage device]
+  "264":
+    name: 통신 및 방송 장비 제조업
+    ko: [통신장비, 5G 장비, 네트워크 장비, 스마트폰, 갤럭시, 아이폰, 위성통신, 무선통신 장비]
+    en: [smartphone, smartphones, iPhone, Galaxy, telecom equipment, network equipment]
+  "265":
+    name: 영상 및 음향기기 제조업
+    ko: [OLED TV, TV 시장, TV 판매, 음향기기, 스피커, 이어폰, 프로젝터]
+    en: [television, TV maker, audio equipment]
+  "292":
+    name: 특수 목적용 기계 제조업
+    ko: [반도체 장비, 반도체장비, 디스플레이 장비, 노광, 식각, 증착, 전공정, 후공정, 공작기계, 로봇]
+    en: [chip equipment, semiconductor equipment, lithography, etching, robotics]
+  "291":
+    name: 일반 목적용 기계 제조업
+    ko: [기계, 건설기계, 굴착기, 펌프, 밸브, 공조기, 냉동공조, 터빈]
+    en: [machinery, construction equipment, excavator, turbine]
+  # ── 바이오·의료 ──────────────────────────────────────────
+  "211":
+    name: 기초 의약물질 제조업
+    ko: [바이오시밀러, 원료의약품, 항체, 백신, 세포치료제, 유전자치료제, 바이오의약품]
+    en: [biosimilar, vaccine, antibody, cell therapy, gene therapy, biologics]
+  "212":
+    name: 의약품 제조업
+    ko: [제약, 신약, 임상, 임상시험, 품목허가, FDA 승인, 복제약, 제네릭, 의약품]
+    en: [pharma, pharmaceutical, drug approval, clinical trial, FDA approval, generic drug]
+  "213":
+    name: 의료용품 및 기타 의약 관련제품 제조업
+    ko: [의료용품, 콘택트렌즈, 주사기, 진단키트, 체외진단, 진단시약]
+    en: [diagnostic kit, contact lens, in vitro diagnostic]
+  "271":
+    name: 의료용 기기 제조업
+    ko: [의료기기, 임플란트, 미용 의료기기, 피부미용기기, 초음파 진단, 인공관절, 레이저 의료]
+    en: [medical device, medical devices, implant, aesthetic device]
+  "701":
+    name: 자연과학 및 공학 연구개발업
+    ko: [바이오벤처, 신약개발, 기술이전, 라이선스 아웃, 라이선스아웃, 임상 1상, 임상 2상, 임상 3상, 임상]
+    en: [biotech, licensing deal, out-licensing, phase 3, phase 2]
+  # ── 자동차·운송장비·방산 ─────────────────────────────────
+  "301":
+    name: 자동차용 엔진 및 자동차 제조업
+    ko: [완성차, 현대차, 기아, 전기차, 자동차 판매, 자동차 수출, 하이브리드차]
+    en: [automaker, automakers, electric vehicle, EV sales, Hyundai Motor, Kia]
+  "303":
+    name: 자동차 신품 부품 제조업
+    ko: [자동차 부품, 차부품, 부품사, 모비스, 전장, 자율주행 부품]
+    en: [auto parts, auto supplier, auto suppliers]
+  "311":
+    name: 선박 및 보트 건조업
+    ko: [조선, 조선사, 선박 수주, LNG선, 컨테이너선, 조선업, 도크, 상선]
+    en: [shipbuilder, shipbuilders, shipbuilding, LNG carrier, vessel order]
+  "313":
+    name: 항공기,우주선 및 부품 제조업
+    ko: [항공기, 항공우주, 우주발사체, 위성, 항공 부품, KF-21, 우주항공]
+    en: [aerospace, aircraft, satellite launch]
+  "252":
+    name: 무기 및 총포탄 제조업
+    ko: [방산, 방위산업, 무기, 미사일, 자주포, 전차, K9, 천무, 탄약, 국방예산]
+    en: [defense contractor, defense exports, missile, munitions, arms deal]
+  # ── 소재·에너지 ──────────────────────────────────────────
+  "241":
+    name: 1차 철강 제조업
+    ko: [철강, 포스코, 현대제철, 열연, 냉연, 후판, 철근, 철강 가격]
+    en: [steel, steelmaker, steelmakers]
+  "242":
+    name: 1차 비철금속 제조업
+    ko: [비철금속, 구리, 동가격, 알루미늄, 아연, 니켈, 금값, 금 가격]
+    en: [copper, aluminum, aluminium, nickel, zinc, gold price]
+  "282":
+    name: 일차전지 및 이차전지 제조업
+    ko: [2차전지, 이차전지, 배터리, 양극재, 음극재, 전해질, 분리막, 전고체]
+    en: [battery, batteries, cathode, anode, electrolyte, separator, ESS, solid-state]
+  "281":
+    name: 전동기, 발전기 및 전기 변환 · 공급 · 제어 장치 제조업
+    ko: [변압기, 전력기기, 전력설비, 송전, 배전, 초고압, 발전기]
+    en: [transformer, transformers, power equipment, grid equipment, switchgear]
+  "283":
+    name: 절연선 및 케이블 제조업
+    ko: [전선, 케이블, 해저케이블, 광케이블]
+    en: [cable, cables, subsea cable]
+  "201":
+    name: 기초 화학물질 제조업
+    ko: [석유화학, 에틸렌, 나프타, NCC, 폴리에틸렌, PVC, 화학 업황, 화학주]
+    en: [petrochemical, petrochemicals, ethylene, naphtha]
+  "204":
+    name: 기타 화학제품 제조업
+    ko: [화장품, 뷰티, K뷰티, 코스메틱, 페인트, 도료, 접착제]
+    en: [cosmetics, beauty, K-beauty]
+  "192":
+    name: 석유 정제품 제조업
+    ko: [정유, 정제마진, 휘발유, 경유 가격, 유가]
+    en: [refiner, refiners, refining margin, crude oil, oil price, oil prices]
+  "351":
+    name: 전기업
+    ko: [한전, 한국전력, 전기요금, 전력요금, 발전소, 원전, 원자력, 발전 사업]
+    en: [nuclear power, power plant, utility, utilities]
+  "352":
+    name: 연료용 가스 제조 및 배관공급업
+    ko: [도시가스, 가스공사, LNG 가격, 가스요금, 천연가스]
+    en: [natural gas, LNG price, LNG prices]
+  # ── IT·미디어·통신 ───────────────────────────────────────
+  "582":
+    name: 소프트웨어 개발 및 공급업
+    ko: [게임, 게임사, 신작, 소프트웨어]
+    en: [game, games, video game, software, SaaS]
+  "620":
+    name: 컴퓨터 프로그래밍, 시스템 통합 및 관리업
+    ko: [시스템통합, SI 업체, IT서비스, 클라우드 전환, 디지털 전환]
+    en: [IT services, system integrator, cloud migration]
+  "631":
+    name: 자료처리, 호스팅, 포털 및 기타 인터넷 정보매개 서비스업
+    ko: [네이버, 카카오, 포털, 플랫폼, 검색광고, 클라우드 서비스, 데이터센터]
+    en: [platform, portal, cloud service, cloud services, hosting]
+  "612":
+    name: 전기 통신업
+    ko: [통신사, 케이티, SK텔레콤, SKT, LG유플러스, 통신 3사, 이통사, 통신요금, 알뜰폰]
+    en: [telecom, telecoms, carrier, carriers, 5G]
+    exclude: [KT&G, KTX]
+  "602":
+    name: 텔레비전 방송업
+    ko: [방송사, 지상파, 종편, 홈쇼핑, 케이블TV]
+    en: [broadcaster, broadcasters]
+  "591":
+    name: 영화, 비디오물, 방송프로그램 제작 및 배급업
+    ko: [드라마, 영화, 콘텐츠 제작, 제작사, 엔터, 엔터테인먼트, 넷플릭스, 박스오피스]
+    en: [drama, film, content, OTT, Netflix, box office]
+  "592":
+    name: 오디오물 출판 및 원판 녹음업
+    ko: [음반, 음원, K팝, 케이팝, 아이돌, 콘서트, 하이브, JYP, SM엔터, YG엔터]
+    en: [K-pop, kpop, album, concert, concerts]
+  "713":
+    name: 광고업
+    ko: [광고 시장, 광고대행, 광고업, 디지털 광고]
+    en: [advertising, ad spending, ad market]
+  # ── 금융 ─────────────────────────────────────────────────
+  "641":
+    name: 은행 및 저축기관
+    ko: [은행, 은행주, 금융지주, 예대마진, 순이자마진, NIM, 대출 금리, 가계대출, 기준금리]
+    en: [bank, banks, lender, lenders, net interest margin, rate cut, rate hike]
+  "651":
+    name: 보험업
+    ko: [보험, 보험사, 생보, 손보, 보험료, IFRS17, 킥스, K-ICS]
+    en: [insurer, insurers, insurance]
+  "649":
+    name: 기타 금융업
+    ko: [카드사, 캐피탈, 여신전문, 할부금융, 저축은행, 대부업]
+    en: [credit card, consumer finance, card issuer]
+  "661":
+    name: 금융 지원 서비스업
+    ko: [증권사, 증권주, 브로커리지, 거래대금, IB 수수료, 토큰증권, 거래소]
+    en: [brokerage, brokerages, securities firm, exchange operator]
+  "664":
+    name: 신탁업 및 집합투자업
+    ko: [자산운용, 운용사, ETF 시장, 신탁, 펀드 시장, 사모펀드]
+    en: [asset manager, asset managers, asset management, fund inflows]
+  # ── 건설·부동산 ──────────────────────────────────────────
+  "411":
+    name: 건물 건설업
+    ko: [건설사, 건설주, 주택, 분양, 재건축, 재개발, 아파트 분양, 미분양, 도시정비]
+    en: [homebuilder, homebuilders, construction, housing]
+  "412":
+    name: 토목 건설업
+    ko: [토목, SOC, 인프라 투자, 플랜트, 해외 건설, 항만 공사, 도로 공사, 철도 공사]
+    en: [infrastructure, plant construction]
+  "681":
+    name: 부동산 임대 및 공급업
+    ko: [부동산, 리츠, 임대, 오피스 공실, 부동산 PF, 상업용 부동산]
+    en: [real estate, REIT, REITs, property]
+  # ── 소비·유통·운송 ───────────────────────────────────────
+  "107":
+    name: 기타 식품 제조업
+    ko: [식품, 식품주, 라면, 과자, 가공식품, K푸드, 즉석식품, 식료품]
+    en: [food maker, packaged food, K-food]
+  "111":
+    name: 알코올음료 제조업
+    ko: [소주, 맥주, 위스키, 주류, 하이볼]
+    en: [liquor, beer, soju, spirits]
+  "471":
+    name: 종합 소매업
+    ko: [백화점, 대형마트, 이마트, 롯데쇼핑, 유통주, 유통업, 편의점, 소매판매]
+    en: [retailer, retailers, department store, retail sales]
+  "501":
+    name: 해상 운송업
+    ko: [해운, 해운사, 컨테이너 운임, SCFI, 벌크선 운임, BDI, HMM]
+    en: [shipping, container rates, freight rates]
+  "511":
+    name: 항공 여객 운송업
+    ko: [항공사, 항공주, 여객 수요, 국제선, 항공권, 대한항공, 아시아나, 저비용항공, LCC]
+    en: [airline, airlines, passenger demand, air travel]
+  "752":
+    name: 여행사 및 기타 여행보조 서비스업
+    ko: [여행사, 해외여행, 패키지여행, 여행 수요, 하나투어, 모두투어]
+    en: [travel agency, tourism, outbound travel]

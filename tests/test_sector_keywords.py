@@ -2,7 +2,7 @@ import pytest
 
 from news_scraper.sector_keywords import (
     SectorKeywordError, parse_sector_keywords, load_sector_keywords,
-    KeywordHit, match_sectors, ROUTE_KW_TITLE, ROUTE_KW_BODY,
+    KeywordHit, match_sectors, ROUTE_KW_TITLE, ROUTE_KW_BODY, DEFAULT_PATH,
 )
 
 
@@ -135,3 +135,20 @@ def test_multi_sector_attribution():
 
 def test_none_inputs_are_safe():
     assert match_sectors(None, None, _kw()) == {}
+
+
+def test_shipped_dictionary_loads_and_has_49_sectors():
+    d = load_sector_keywords()
+    assert DEFAULT_PATH.exists()
+    assert d.version == "2026-09-06.1"
+    assert len(d.sectors) == 49
+    for key in ("261", "212", "641", "311", "282", "582"):
+        assert key in d.sectors
+
+
+def test_shipped_dictionary_smoke_matches():
+    d = load_sector_keywords()
+    assert "261" in match_sectors("SK하이닉스 HBM 증설", "", d)
+    assert "612" not in match_sectors("KT&G 담배 판매 호조", "", d)          # exclude
+    assert "311" in match_sectors("HD현대중공업 LNG선 3척 수주", "", d)
+    assert "641" in match_sectors("Bank of Korea signals rate cut path", "", d)
