@@ -516,6 +516,9 @@ class NewsDatabase:
     # ------------------------------------------------------------------
     # 섹터 뉴스 점수 (스펙 B, 2026-09-06) — 봇(kis-trading-template)이 읽는다
     # ------------------------------------------------------------------
+    # computed_at DEFAULT now() 는 서버 세션 타임존(현재 Asia/Seoul)으로 쓰인다.
+    # 봇의 60분 staleness 체크가 이 값을 KST 벽시계와 비교하므로,
+    # DB 의 TimeZone GUC 는 Asia/Seoul 로 유지되어야 한다.
     SECTOR_NEWS_DDL = (
         """
         CREATE TABLE IF NOT EXISTS sector_news_score (
@@ -594,7 +597,7 @@ class NewsDatabase:
                            sentiment_score, related_stocks, published_at
                     FROM news
                     WHERE published_at > %s AND published_at <= %s
-                    ORDER BY published_at
+                    ORDER BY published_at, news_id
                 """, (start, end))
                 return self._rows_to_dicts(cur)
         finally:
@@ -662,6 +665,7 @@ class NewsDatabase:
                            s["score_raw"], s["score_norm"], s["score_signed"],
                            json.dumps(s.get("top_news") or [], ensure_ascii=False), s.get("dict_version"))
                           for s in scores],
+                        # computed_at = now() 는 서버 세션 타임존(Asia/Seoul)으로 기록된다.
                         template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, now())")
             conn.commit()
             return len(scores), len(hits)

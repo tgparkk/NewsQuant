@@ -1,5 +1,5 @@
 """실 DB(kis_template) 왕복. DB 없으면 conftest.db 픽스처가 skip 한다."""
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -78,8 +78,9 @@ def test_read_empty_day_returns_empty_list(db):
 
 
 def test_get_news_in_window_shape(db):
-    rows = db.get_news_in_window(datetime(2026, 9, 3, 15, 30), datetime(2026, 9, 4, 9, 0))
+    rows = db.get_news_in_window(datetime.now() - timedelta(days=14), datetime.now())
     assert isinstance(rows, list)
+    assert rows == sorted(rows, key=lambda r: (r["published_at"], r["news_id"]))
     if rows:
         assert {"news_id", "title", "content", "source", "sentiment_score", "related_stocks", "published_at"} <= set(rows[0])
 

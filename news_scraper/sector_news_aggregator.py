@@ -66,7 +66,7 @@ def is_frozen(now: datetime) -> bool:
 
 
 def split_related_stocks(raw) -> List[str]:
-    """'005930,000660' → ['005930','000660']. 6자리만, 순서 유지, 중복 제거."""
+    """'005930,000660' → ['005930','000660']. 6글자만(영숫자 코드 0220WL 등 포함), 순서 유지, 중복 제거."""
     if not raw:
         return []
     out: List[str] = []
