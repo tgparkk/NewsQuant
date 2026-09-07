@@ -385,7 +385,17 @@ class NewsScheduler:
             max_instances=1,
             misfire_grace_time=120
         )
-        
+
+        # 스펙 B: 섹터 뉴스 점수 집계 (10분) — sector_news_score UPSERT. 봇이 09:00 에 읽는다.
+        self.scheduler.add_job(
+            func=self.run_sector_news_aggregation,
+            trigger=IntervalTrigger(minutes=10),
+            id='sector_news_aggregation',
+            max_instances=1,
+            misfire_grace_time=300
+        )
+        logger.info("- 섹터 뉴스 집계: 10분마다 (평일 09:05~15:30 동결)")
+
         logger.info("스케줄 설정 완료")
         logger.info("- 시장 운영 시간 (월~금 09:00~15:30): 1분마다")
         logger.info("- 시장 마감 후 (월~금 15:30~24:00, 00:00~09:00): 5분마다")
@@ -399,7 +409,10 @@ class NewsScheduler:
             
             # 시작 시 즉시 한 번 수집
             self.collect_all_news()
-            
+
+            # 첫 수집 직후 섹터 점수 1회 (07:40 기동 → 09:00 전에 8회 더 돈다)
+            self.run_sector_news_aggregation()
+
             logger.info("스케줄러가 실행 중입니다. Ctrl+C로 종료할 수 있습니다.")
             self.scheduler.start()
             
@@ -410,6 +423,11 @@ class NewsScheduler:
             logger.error(f"스케줄러 오류: {e}", exc_info=True)
             self.scheduler.shutdown()
     
+    def run_sector_news_aggregation(self):
+        """섹터 뉴스 점수 집계 1회 (스펙 B). 예외는 잡 안에서 처리된다."""
+        from .sector_news_job import run_sector_news_job
+        return run_sector_news_job(self.db)
+
     def stop(self):
         """스케줄러 중지"""
         logger.info("스케줄러를 중지합니다...")
