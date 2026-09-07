@@ -3,6 +3,7 @@
 PostgreSQL을 사용하여 뉴스 데이터 저장 및 조회
 """
 
+import json
 import os
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
@@ -146,6 +147,12 @@ class NewsDatabase:
 
             conn.commit()
             logger.info("PostgreSQL 데이터베이스 초기화 완료")
+
+            # 스펙 B: 섹터 뉴스 점수 표 (실패해도 뉴스 수집은 계속 — 집계 잡이 나중에 다시 실패를 보고한다)
+            try:
+                self.init_sector_news_tables()
+            except Exception as e:
+                logger.error(f"[섹터뉴스] 표 초기화 실패(수집은 계속): {e}")
         except Exception as e:
             conn.rollback()
             logger.error(f"데이터베이스 초기화 오류: {e}")
@@ -504,4 +511,195 @@ class NewsDatabase:
             logger.error(f"뉴스 검색 오류: {e}")
             return []
         finally:
+            self._put_connection(conn)
+
+    # ------------------------------------------------------------------
+    # 섹터 뉴스 점수 (스펙 B, 2026-09-06) — 봇(kis-trading-template)이 읽는다
+    # ------------------------------------------------------------------
+    SECTOR_NEWS_DDL = (
+        """
+        CREATE TABLE IF NOT EXISTS sector_news_score (
+            trade_date    date        NOT NULL,
+            taxonomy      text        NOT NULL DEFAULT 'ksic3',
+            sector_key    text        NOT NULL,
+            sector_name   text,
+            window_start  timestamp   NOT NULL,
+            window_end    timestamp   NOT NULL,
+            n_news        integer     NOT NULL,
+            n_dir         integer     NOT NULL,
+            n_kw          integer     NOT NULL,
+            n_stock       integer     NOT NULL,
+            n_pos         integer     NOT NULL,
+            n_neg         integer     NOT NULL,
+            score_raw     double precision NOT NULL,
+            score_norm    double precision NOT NULL,
+            score_signed  double precision NOT NULL,
+            top_news      jsonb,
+            dict_version  text,
+            computed_at   timestamp   NOT NULL DEFAULT now(),
+            PRIMARY KEY (trade_date, taxonomy, sector_key)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_sns_date ON sector_news_score (trade_date, computed_at DESC)",
+        """
+        CREATE TABLE IF NOT EXISTS news_sector_hit (
+            trade_date    date    NOT NULL,
+            news_id       text    NOT NULL,
+            sector_key    text    NOT NULL,
+            route         text    NOT NULL,
+            routes        text    NOT NULL,
+            matched       text,
+            w_match       double precision NOT NULL,
+            contribution  double precision NOT NULL,
+            computed_at   timestamp NOT NULL DEFAULT now(),
+            PRIMARY KEY (trade_date, news_id, sector_key)
+        )
+        """,
+    )
+    # DB 관례: 67표 전부 robotrader 소유. NewsQuant 는 postgres 로 붙으므로 만든 뒤 넘긴다.
+    SECTOR_NEWS_OWNER_SQL = (
+        "ALTER TABLE sector_news_score OWNER TO robotrader",
+        "ALTER TABLE news_sector_hit OWNER TO robotrader",
+    )
+
+    def init_sector_news_tables(self) -> None:
+        """DDL(멱등) + OWNER 변경. OWNER 실패는 WARNING(권한 없는 롤일 때)."""
+        conn = self.get_connection()
+        try:
+            with conn.cursor() as cur:
+                for sql in self.SECTOR_NEWS_DDL:
+                    cur.execute(sql)
+            conn.commit()
+            for sql in self.SECTOR_NEWS_OWNER_SQL:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(sql)
+                    conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    logger.warning(f"[섹터뉴스] OWNER 변경 실패(무시): {sql} → {e}")
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._put_connection(conn)
+
+    def get_news_in_window(self, start: datetime, end: datetime) -> List[Dict]:
+        """창 (start, end] 안의 뉴스. 집계에 필요한 열만."""
+        conn = self.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT news_id, title, content, source, category,
+                           sentiment_score, related_stocks, published_at
+                    FROM news
+                    WHERE published_at > %s AND published_at <= %s
+                    ORDER BY published_at
+                """, (start, end))
+                return self._rows_to_dicts(cur)
+        finally:
+            conn.rollback()
+            self._put_connection(conn)
+
+    def get_sector_map_as_of(self, as_of, codes: List[str]) -> Tuple[Dict[str, str], Dict[str, str]]:
+        """스펙 A `fn_sector_map_as_of(as_of)` → ({code: ksic3}, {ksic3: name}).
+        함수가 없으면 psycopg2.errors.UndefinedFunction 이 그대로 올라간다 — 호출자(잡)가 경로 B 를 끈다."""
+        if not codes:
+            return {}, {}
+        conn = self.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT stock_code, left(ksic_code, 3) AS ksic3, ksic3_name
+                    FROM fn_sector_map_as_of(%s)
+                    WHERE stock_code = ANY(%s) AND ksic_code IS NOT NULL AND length(ksic_code) >= 3
+                """, (as_of, list(codes)))
+                code_map: Dict[str, str] = {}
+                names: Dict[str, str] = {}
+                for stock_code, ksic3, name in cur.fetchall():
+                    code_map[stock_code] = ksic3
+                    if name and ksic3 not in names:
+                        names[ksic3] = name
+                return code_map, names
+        finally:
+            conn.rollback()   # 실패한 트랜잭션을 풀에 돌려보내지 않는다
+            self._put_connection(conn)
+
+    def write_sector_news_result(self, trade_date, scores: List[Dict], hits: List[Dict]) -> Tuple[int, int]:
+        """한 트랜잭션: news_sector_hit 그 날짜 DELETE+INSERT · sector_news_score UPSERT. (저장 섹터 수, 저장 hit 수)"""
+        conn = self.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM news_sector_hit WHERE trade_date = %s", (trade_date,))
+                if hits:
+                    extras.execute_values(cur, """
+                        INSERT INTO news_sector_hit
+                            (trade_date, news_id, sector_key, route, routes, matched, w_match, contribution)
+                        VALUES %s
+                        ON CONFLICT (trade_date, news_id, sector_key) DO UPDATE SET
+                            route = EXCLUDED.route, routes = EXCLUDED.routes, matched = EXCLUDED.matched,
+                            w_match = EXCLUDED.w_match, contribution = EXCLUDED.contribution, computed_at = now()
+                    """, [(h["trade_date"], h["news_id"], h["sector_key"], h["route"], h["routes"],
+                           h["matched"], h["w_match"], h["contribution"]) for h in hits])
+                if scores:
+                    extras.execute_values(cur, """
+                        INSERT INTO sector_news_score
+                            (trade_date, taxonomy, sector_key, sector_name, window_start, window_end,
+                             n_news, n_dir, n_kw, n_stock, n_pos, n_neg,
+                             score_raw, score_norm, score_signed, top_news, dict_version, computed_at)
+                        VALUES %s
+                        ON CONFLICT (trade_date, taxonomy, sector_key) DO UPDATE SET
+                            sector_name = EXCLUDED.sector_name,
+                            window_start = EXCLUDED.window_start, window_end = EXCLUDED.window_end,
+                            n_news = EXCLUDED.n_news, n_dir = EXCLUDED.n_dir, n_kw = EXCLUDED.n_kw,
+                            n_stock = EXCLUDED.n_stock, n_pos = EXCLUDED.n_pos, n_neg = EXCLUDED.n_neg,
+                            score_raw = EXCLUDED.score_raw, score_norm = EXCLUDED.score_norm,
+                            score_signed = EXCLUDED.score_signed, top_news = EXCLUDED.top_news,
+                            dict_version = EXCLUDED.dict_version, computed_at = now()
+                    """, [(s["trade_date"], "ksic3", s["sector_key"], s.get("sector_name"),
+                           s["window_start"], s["window_end"],
+                           s["n_news"], s["n_dir"], s["n_kw"], s["n_stock"], s["n_pos"], s["n_neg"],
+                           s["score_raw"], s["score_norm"], s["score_signed"],
+                           json.dumps(s.get("top_news") or [], ensure_ascii=False), s.get("dict_version"))
+                          for s in scores],
+                        template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, now())")
+            conn.commit()
+            return len(scores), len(hits)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._put_connection(conn)
+
+    @staticmethod
+    def _jsonable(value):
+        if isinstance(value, (datetime, )):
+            return value.isoformat()
+        if hasattr(value, "isoformat"):      # date
+            return value.isoformat()
+        try:
+            from decimal import Decimal
+            if isinstance(value, Decimal):
+                return float(value)
+        except ImportError:
+            pass
+        return value
+
+    def get_sector_news_scores(self, trade_date) -> List[Dict]:
+        """그 거래일의 섹터 점수(JSON 직렬화 가능한 dict). score_signed DESC, n_dir DESC."""
+        conn = self.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT trade_date, taxonomy, sector_key, sector_name, window_start, window_end,
+                           n_news, n_dir, n_kw, n_stock, n_pos, n_neg,
+                           score_raw, score_norm, score_signed, top_news, dict_version, computed_at
+                    FROM sector_news_score
+                    WHERE trade_date = %s AND taxonomy = 'ksic3'
+                    ORDER BY score_signed DESC, n_dir DESC, sector_key
+                """, (trade_date,))
+                cols = [d[0] for d in cur.description]
+                return [{c: self._jsonable(v) for c, v in zip(cols, row)} for row in cur.fetchall()]
+        finally:
+            conn.rollback()
             self._put_connection(conn)
