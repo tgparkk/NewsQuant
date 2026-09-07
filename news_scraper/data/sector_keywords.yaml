@@ -11,8 +11,8 @@ sectors:
     exclude: [반도체 ETF]
   "262":
     name: 전자부품 제조업
-    ko: [전자부품, MLCC, 기판, 디스플레이, LCD, 카메라모듈, 적층세라믹]
-    en: [display, OLED, PCB, electronic components]
+    ko: [전자부품, 기판, 디스플레이, 카메라모듈, 적층세라믹]
+    en: [display, OLED, PCB, electronic components, MLCC, LCD]
   "263":
     name: 컴퓨터 및 주변장치 제조업
     ko: [서버, 데이터센터, 스토리지, 노트북]
@@ -73,8 +73,8 @@ sectors:
     en: [aerospace, aircraft, satellite launch]
   "252":
     name: 무기 및 총포탄 제조업
-    ko: [방산, 방위산업, 무기, 미사일, 자주포, 전차, K9, 천무, 탄약, 국방예산]
-    en: [defense contractor, defense exports, missile, munitions, arms deal]
+    ko: [방산, 방위산업, 무기, 미사일, 자주포, 전차, 천무, 탄약, 국방예산]
+    en: [defense contractor, defense exports, missile, munitions, arms deal, K9]
   # ── 소재·에너지 ──────────────────────────────────────────
   "241":
     name: 1차 철강 제조업
@@ -131,8 +131,8 @@ sectors:
     en: [platform, portal, cloud service, cloud services, hosting]
   "612":
     name: 전기 통신업
-    ko: [통신사, 케이티, SK텔레콤, SKT, LG유플러스, 통신 3사, 이통사, 통신요금, 알뜰폰]
-    en: [telecom, telecoms, carrier, carriers, 5G]
+    ko: [통신사, 케이티, SK텔레콤, LG유플러스, 통신 3사, 이통사, 통신요금, 알뜰폰]
+    en: [telecom, telecoms, carrier, carriers, 5G, SKT]
     exclude: [KT&G, KTX]
   "602":
     name: 텔레비전 방송업
@@ -153,8 +153,8 @@ sectors:
   # ── 금융 ─────────────────────────────────────────────────
   "641":
     name: 은행 및 저축기관
-    ko: [은행, 은행주, 금융지주, 예대마진, 순이자마진, NIM, 대출 금리, 가계대출, 기준금리]
-    en: [bank, banks, lender, lenders, net interest margin, rate cut, rate hike]
+    ko: [은행, 은행주, 금융지주, 예대마진, 순이자마진, 대출 금리, 가계대출, 기준금리]
+    en: [bank, banks, lender, lenders, net interest margin, rate cut, rate hike, NIM]
   "651":
     name: 보험업
     ko: [보험, 보험사, 생보, 손보, 보험료, IFRS17, 킥스, K-ICS]
@@ -178,8 +178,8 @@ sectors:
     en: [homebuilder, homebuilders, construction, housing]
   "412":
     name: 토목 건설업
-    ko: [토목, SOC, 인프라 투자, 플랜트, 해외 건설, 항만 공사, 도로 공사, 철도 공사]
-    en: [infrastructure, plant construction]
+    ko: [토목, 인프라 투자, 플랜트, 해외 건설, 항만 공사, 도로 공사, 철도 공사]
+    en: [infrastructure, plant construction, SOC]
   "681":
     name: 부동산 임대 및 공급업
     ko: [부동산, 리츠, 임대, 오피스 공실, 부동산 PF, 상업용 부동산]
@@ -199,12 +199,12 @@ sectors:
     en: [retailer, retailers, department store, retail sales]
   "501":
     name: 해상 운송업
-    ko: [해운, 해운사, 컨테이너 운임, SCFI, 벌크선 운임, BDI, HMM]
-    en: [shipping, container rates, freight rates]
+    ko: [해운, 해운사, 컨테이너 운임, SCFI, 벌크선 운임, BDI]
+    en: [shipping, container rates, freight rates, HMM]
   "511":
     name: 항공 여객 운송업
-    ko: [항공사, 항공주, 여객 수요, 국제선, 항공권, 대한항공, 아시아나, 저비용항공, LCC]
-    en: [airline, airlines, passenger demand, air travel]
+    ko: [항공사, 항공주, 여객 수요, 국제선, 항공권, 대한항공, 아시아나, 저비용항공]
+    en: [airline, airlines, passenger demand, air travel, LCC]
   "752":
     name: 여행사 및 기타 여행보조 서비스업
     ko: [여행사, 해외여행, 패키지여행, 여행 수요, 하나투어, 모두투어]

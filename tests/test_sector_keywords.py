@@ -153,3 +153,5 @@ def test_shipped_dictionary_smoke_matches():
     assert "612" not in match_sectors("KT&G 담배 판매 호조", "", d)          # exclude
     assert "311" in match_sectors("HD현대중공업 LNG선 3척 수주", "", d)
     assert "641" in match_sectors("Bank of Korea signals rate cut path", "", d)
+    assert "641" not in match_sectors("Minimum wage debate continues", "", d)     # 'nim' 부분문자열 오탐 방지
+    assert "412" in match_sectors("정부 SOC 예산 20% 증액", "", d)                   # 한글 앞뒤도 단어경계
