@@ -1,7 +1,7 @@
 # 섹터 키워드 사전 (스펙 B §4.2) — KSIC 3자리 → 한/영 키워드
 # 규칙: 키는 따옴표 3자리 · ko 는 부분문자열 · en 은 단어경계 · exclude 걸리면 귀속 취소
 # 변경은 커밋으로만. version 을 올려라 (sector_news_score.dict_version 에 기록된다).
-version: "2026-09-06.1"
+version: "2026-09-07.1"
 sectors:
   # ── 전자·반도체 ──────────────────────────────────────────
   "261":
@@ -15,7 +15,7 @@ sectors:
     en: [display, OLED, PCB, electronic components, MLCC, LCD]
   "263":
     name: 컴퓨터 및 주변장치 제조업
-    ko: [서버, 데이터센터, 스토리지, 노트북]
+    ko: [데이터센터, 스토리지, 노트북, AI 서버, 서버 수요, 서버용]
     en: [server, servers, data center, datacenter, SSD, storage device]
   "264":
     name: 통신 및 방송 장비 제조업
@@ -40,7 +40,7 @@ sectors:
     en: [biosimilar, vaccine, antibody, cell therapy, gene therapy, biologics]
   "212":
     name: 의약품 제조업
-    ko: [제약, 신약, 임상, 임상시험, 품목허가, FDA 승인, 복제약, 제네릭, 의약품]
+    ko: [신약, 임상, 임상시험, 품목허가, FDA 승인, 복제약, 제네릭, 의약품, 제약사, 제약주, 제약업, 제약바이오]
     en: [pharma, pharmaceutical, drug approval, clinical trial, FDA approval, generic drug]
   "213":
     name: 의료용품 및 기타 의약 관련제품 제조업
@@ -65,7 +65,7 @@ sectors:
     en: [auto parts, auto supplier, auto suppliers]
   "311":
     name: 선박 및 보트 건조업
-    ko: [조선, 조선사, 선박 수주, LNG선, 컨테이너선, 조선업, 도크, 상선]
+    ko: [조선사, 선박 수주, LNG선, 컨테이너선, 조선업, 도크, 상선, 조선주, 조선 3사, 조선해양]
     en: [shipbuilder, shipbuilders, shipbuilding, LNG carrier, vessel order]
   "313":
     name: 항공기,우주선 및 부품 제조업
@@ -73,7 +73,7 @@ sectors:
     en: [aerospace, aircraft, satellite launch]
   "252":
     name: 무기 및 총포탄 제조업
-    ko: [방산, 방위산업, 무기, 미사일, 자주포, 전차, 천무, 탄약, 국방예산]
+    ko: [방산, 방위산업, 미사일, 자주포, 전차, 천무, 탄약, 국방예산, 무기 수출, 무기체계, 방산주]
     en: [defense contractor, defense exports, missile, munitions, arms deal, K9]
   # ── 소재·에너지 ──────────────────────────────────────────
   "241":
@@ -82,7 +82,7 @@ sectors:
     en: [steel, steelmaker, steelmakers]
   "242":
     name: 1차 비철금속 제조업
-    ko: [비철금속, 구리, 동가격, 알루미늄, 아연, 니켈, 금값, 금 가격]
+    ko: [비철금속, 동가격, 알루미늄, 아연, 니켈, 금값, 금 가격, 구리 가격, 구릿값, 구리 선물]
     en: [copper, aluminum, aluminium, nickel, zinc, gold price]
   "282":
     name: 일차전지 및 이차전지 제조업
@@ -91,10 +91,10 @@ sectors:
   "281":
     name: 전동기, 발전기 및 전기 변환 · 공급 · 제어 장치 제조업
     ko: [변압기, 전력기기, 전력설비, 송전, 배전, 초고압, 발전기]
-    en: [transformer, transformers, power equipment, grid equipment, switchgear]
+    en: [power equipment, grid equipment, switchgear, power transformer, power transformers]
   "283":
     name: 절연선 및 케이블 제조업
-    ko: [전선, 케이블, 해저케이블, 광케이블]
+    ko: [케이블, 해저케이블, 광케이블, 전선주, 전선업체, LS전선, 대한전선, 가온전선, 전력 케이블]
     en: [cable, cables, subsea cable]
   "201":
     name: 기초 화학물질 제조업
@@ -106,8 +106,8 @@ sectors:
     en: [cosmetics, beauty, K-beauty]
   "192":
     name: 석유 정제품 제조업
-    ko: [정유, 정제마진, 휘발유, 경유 가격, 유가]
-    en: [refiner, refiners, refining margin, crude oil, oil price, oil prices]
+    ko: [정유, 정제마진, 휘발유, 경유 가격, 국제유가, 유가 급등, 유가 하락, 유가 상승, 브렌트유, 두바이유]
+    en: [refiner, refiners, refining margin, crude oil, oil price, oil prices, WTI, Brent]
   "351":
     name: 전기업
     ko: [한전, 한국전력, 전기요금, 전력요금, 발전소, 원전, 원자력, 발전 사업]
@@ -132,7 +132,7 @@ sectors:
   "612":
     name: 전기 통신업
     ko: [통신사, 케이티, SK텔레콤, LG유플러스, 통신 3사, 이통사, 통신요금, 알뜰폰]
-    en: [telecom, telecoms, carrier, carriers, 5G, SKT]
+    en: [telecom, telecoms, 5G, SKT, telecom carrier, wireless carrier]
     exclude: [KT&G, KTX]
   "602":
     name: 텔레비전 방송업
@@ -140,8 +140,8 @@ sectors:
     en: [broadcaster, broadcasters]
   "591":
     name: 영화, 비디오물, 방송프로그램 제작 및 배급업
-    ko: [드라마, 영화, 콘텐츠 제작, 제작사, 엔터, 엔터테인먼트, 넷플릭스, 박스오피스]
-    en: [drama, film, content, OTT, Netflix, box office]
+    ko: [드라마, 영화, 콘텐츠 제작, 제작사, 엔터테인먼트, 넷플릭스, 박스오피스, 엔터주, 엔터사]
+    en: [drama, film, OTT, Netflix, box office]
   "592":
     name: 오디오물 출판 및 원판 녹음업
     ko: [음반, 음원, K팝, 케이팝, 아이돌, 콘서트, 하이브, JYP, SM엔터, YG엔터]
@@ -178,12 +178,12 @@ sectors:
     en: [homebuilder, homebuilders, construction, housing]
   "412":
     name: 토목 건설업
-    ko: [토목, 인프라 투자, 플랜트, 해외 건설, 항만 공사, 도로 공사, 철도 공사]
-    en: [infrastructure, plant construction, SOC]
+    ko: [토목, 인프라 투자, 플랜트, 해외 건설, 항만 공사, 도로 공사, 철도 공사, SOC 예산, SOC 투자, 사회간접자본]
+    en: [plant construction, infrastructure spending, infrastructure investment, infrastructure bill]
   "681":
     name: 부동산 임대 및 공급업
     ko: [부동산, 리츠, 임대, 오피스 공실, 부동산 PF, 상업용 부동산]
-    en: [real estate, REIT, REITs, property]
+    en: [real estate, REIT, REITs, property market, property prices]
   # ── 소비·유통·운송 ───────────────────────────────────────
   "107":
     name: 기타 식품 제조업
@@ -191,7 +191,7 @@ sectors:
     en: [food maker, packaged food, K-food]
   "111":
     name: 알코올음료 제조업
-    ko: [소주, 맥주, 위스키, 주류, 하이볼]
+    ko: [소주, 맥주, 위스키, 하이볼, 주류업, 주류 시장, 주류 판매]
     en: [liquor, beer, soju, spirits]
   "471":
     name: 종합 소매업

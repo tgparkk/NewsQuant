@@ -33,7 +33,7 @@ def test_job_happy_path_writes_and_reports():
     db.get_sector_map_as_of.assert_called_once_with(date(2026, 9, 7), ["005930"])
     td, scores, hits = db.write_sector_news_result.call_args[0]
     assert td == date(2026, 9, 8) and {x["sector_key"] for x in scores} == {"261", "641"}
-    assert all(x["dict_version"] == "2026-09-06.1" for x in scores)
+    assert all(x["dict_version"] == "2026-09-07.1" for x in scores)
     assert s["stock_route"] is True and s["n_sectors"] == 2 and s["mapped_codes"] == 1
 
 

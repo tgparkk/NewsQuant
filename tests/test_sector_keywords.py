@@ -140,7 +140,7 @@ def test_none_inputs_are_safe():
 def test_shipped_dictionary_loads_and_has_49_sectors():
     d = load_sector_keywords()
     assert DEFAULT_PATH.exists()
-    assert d.version == "2026-09-06.1"
+    assert d.version == "2026-09-07.1"
     assert len(d.sectors) == 49
     for key in ("261", "212", "641", "311", "282", "582"):
         assert key in d.sectors
@@ -155,3 +155,11 @@ def test_shipped_dictionary_smoke_matches():
     assert "641" in match_sectors("Bank of Korea signals rate cut path", "", d)
     assert "641" not in match_sectors("Minimum wage debate continues", "", d)     # 'nim' 부분문자열 오탐 방지
     assert "412" in match_sectors("정부 SOC 예산 20% 증액", "", d)                   # 한글 앞뒤도 단어경계
+    assert "192" not in match_sectors("유가증권시장 거래대금 급증", "", d)
+    assert "192" in match_sectors("국제유가 급등에 정유주 강세", "", d)
+    assert "311" not in match_sectors("[조선비즈] 코스피 전망", "", d)
+    assert "311" in match_sectors("조선주 일제히 상승", "", d)
+    assert "252" not in match_sectors("무기한 파업 돌입", "", d)
+    assert "412" not in match_sectors("Qualcomm new SoC boosts smartphone performance", "", d)
+    assert "412" in match_sectors("정부 SOC 예산 20% 증액", "", d)
+    assert "281" not in match_sectors("Nvidia unveils new transformer model", "", d)
