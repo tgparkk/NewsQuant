@@ -640,9 +640,12 @@ def test_shipped_dictionary_loads_and_has_49_sectors():
 def test_shipped_dictionary_smoke_matches():
     d = load_sector_keywords()
     assert "261" in match_sectors("SK하이닉스 HBM 증설", "", d)
+    assert match_sectors("SK하이닉스 HBM3E 양산 본격화", "", d)["261"].matched == "HBM"
     assert "612" not in match_sectors("KT&G 담배 판매 호조", "", d)          # exclude
     assert "311" in match_sectors("HD현대중공업 LNG선 3척 수주", "", d)
     assert "641" in match_sectors("Bank of Korea signals rate cut path", "", d)
+    assert "641" not in match_sectors("Minimum wage debate continues", "", d)     # 'nim' 부분문자열 오탐 방지
+    assert "412" in match_sectors("정부 SOC 예산 20% 증액", "", d)                   # 한글 앞뒤도 단어경계
 ```
 
 - [ ] **Step 2: 실패 확인**
@@ -655,6 +658,8 @@ Expected: `FileNotFoundError` (사전 파일 없음).
 
 - [ ] **Step 3: 사전 파일 작성** — `news_scraper/data/sector_keywords.yaml` (키는 전부 따옴표. 이름은 2026-09-04 캐시 CSV `Industry` 열 기준. 코드는 `ksic_code_name` 이 채워진 뒤 §7 의 WARNING 으로 재확인)
 
+(2026-09-07 구현 중 정정: 섹터 내 중복 금지 규칙과 라틴 약어 배치 룰링에 따라 아래 블록은 실제 배포 파일과 동일하게 동기화됨 — 라틴 약어는 en(단어경계), HBM 만 ko(숫자 접미 대응).)
+
 ```yaml
 # 섹터 키워드 사전 (스펙 B §4.2) — KSIC 3자리 → 한/영 키워드
 # 규칙: 키는 따옴표 3자리 · ko 는 부분문자열 · en 은 단어경계 · exclude 걸리면 귀속 취소
@@ -665,15 +670,15 @@ sectors:
   "261":
     name: 반도체 제조업
     ko: [반도체, 메모리 반도체, D램, 디램, 낸드, HBM, 파운드리, 웨이퍼, 시스템반도체]
-    en: [semiconductor, semiconductors, chip, chipmaker, chipmakers, DRAM, NAND, HBM, foundry, wafer]
+    en: [semiconductor, semiconductors, chip, chipmaker, chipmakers, DRAM, NAND, foundry, wafer]
     exclude: [반도체 ETF]
   "262":
     name: 전자부품 제조업
-    ko: [전자부품, MLCC, PCB, 기판, 디스플레이, OLED, LCD, 카메라모듈, 적층세라믹]
-    en: [display, OLED, PCB, electronic components]
+    ko: [전자부품, 기판, 디스플레이, 카메라모듈, 적층세라믹]
+    en: [display, OLED, PCB, electronic components, MLCC, LCD]
   "263":
     name: 컴퓨터 및 주변장치 제조업
-    ko: [서버, 데이터센터, SSD, 스토리지, 노트북]
+    ko: [서버, 데이터센터, 스토리지, 노트북]
     en: [server, servers, data center, datacenter, SSD, storage device]
   "264":
     name: 통신 및 방송 장비 제조업
@@ -731,8 +736,8 @@ sectors:
     en: [aerospace, aircraft, satellite launch]
   "252":
     name: 무기 및 총포탄 제조업
-    ko: [방산, 방위산업, 무기, 미사일, 자주포, 전차, K9, 천무, 탄약, 국방예산]
-    en: [defense contractor, defense exports, missile, munitions, arms deal]
+    ko: [방산, 방위산업, 무기, 미사일, 자주포, 전차, 천무, 탄약, 국방예산]
+    en: [defense contractor, defense exports, missile, munitions, arms deal, K9]
   # ── 소재·에너지 ──────────────────────────────────────────
   "241":
     name: 1차 철강 제조업
@@ -744,7 +749,7 @@ sectors:
     en: [copper, aluminum, aluminium, nickel, zinc, gold price]
   "282":
     name: 일차전지 및 이차전지 제조업
-    ko: [2차전지, 이차전지, 배터리, 양극재, 음극재, 전해질, 분리막, ESS, 전고체]
+    ko: [2차전지, 이차전지, 배터리, 양극재, 음극재, 전해질, 분리막, 전고체]
     en: [battery, batteries, cathode, anode, electrolyte, separator, ESS, solid-state]
   "281":
     name: 전동기, 발전기 및 전기 변환 · 공급 · 제어 장치 제조업
@@ -777,7 +782,7 @@ sectors:
   # ── IT·미디어·통신 ───────────────────────────────────────
   "582":
     name: 소프트웨어 개발 및 공급업
-    ko: [게임, 게임사, 신작, 소프트웨어, SaaS]
+    ko: [게임, 게임사, 신작, 소프트웨어]
     en: [game, games, video game, software, SaaS]
   "620":
     name: 컴퓨터 프로그래밍, 시스템 통합 및 관리업
@@ -789,8 +794,8 @@ sectors:
     en: [platform, portal, cloud service, cloud services, hosting]
   "612":
     name: 전기 통신업
-    ko: [통신사, 케이티, SK텔레콤, SKT, LG유플러스, 통신 3사, 이통사, 5G, 통신요금, 알뜰폰]
-    en: [telecom, telecoms, carrier, carriers, 5G]
+    ko: [통신사, 케이티, SK텔레콤, LG유플러스, 통신 3사, 이통사, 통신요금, 알뜰폰]
+    en: [telecom, telecoms, carrier, carriers, 5G, SKT]
     exclude: [KT&G, KTX]
   "602":
     name: 텔레비전 방송업
@@ -798,7 +803,7 @@ sectors:
     en: [broadcaster, broadcasters]
   "591":
     name: 영화, 비디오물, 방송프로그램 제작 및 배급업
-    ko: [드라마, 영화, 콘텐츠 제작, 제작사, 엔터, 엔터테인먼트, OTT, 넷플릭스, 박스오피스]
+    ko: [드라마, 영화, 콘텐츠 제작, 제작사, 엔터, 엔터테인먼트, 넷플릭스, 박스오피스]
     en: [drama, film, content, OTT, Netflix, box office]
   "592":
     name: 오디오물 출판 및 원판 녹음업
@@ -811,8 +816,8 @@ sectors:
   # ── 금융 ─────────────────────────────────────────────────
   "641":
     name: 은행 및 저축기관
-    ko: [은행, 은행주, 금융지주, 예대마진, 순이자마진, NIM, 대출 금리, 가계대출, 기준금리]
-    en: [bank, banks, lender, lenders, net interest margin, rate cut, rate hike]
+    ko: [은행, 은행주, 금융지주, 예대마진, 순이자마진, 대출 금리, 가계대출, 기준금리]
+    en: [bank, banks, lender, lenders, net interest margin, rate cut, rate hike, NIM]
   "651":
     name: 보험업
     ko: [보험, 보험사, 생보, 손보, 보험료, IFRS17, 킥스, K-ICS]
@@ -836,11 +841,11 @@ sectors:
     en: [homebuilder, homebuilders, construction, housing]
   "412":
     name: 토목 건설업
-    ko: [토목, SOC, 인프라 투자, 플랜트, 해외 건설, 항만 공사, 도로 공사, 철도 공사]
-    en: [infrastructure, plant construction]
+    ko: [토목, 인프라 투자, 플랜트, 해외 건설, 항만 공사, 도로 공사, 철도 공사]
+    en: [infrastructure, plant construction, SOC]
   "681":
     name: 부동산 임대 및 공급업
-    ko: [부동산, 리츠, REITs, 임대, 오피스 공실, 부동산 PF, 상업용 부동산]
+    ko: [부동산, 리츠, 임대, 오피스 공실, 부동산 PF, 상업용 부동산]
     en: [real estate, REIT, REITs, property]
   # ── 소비·유통·운송 ───────────────────────────────────────
   "107":
@@ -857,12 +862,12 @@ sectors:
     en: [retailer, retailers, department store, retail sales]
   "501":
     name: 해상 운송업
-    ko: [해운, 해운사, 컨테이너 운임, SCFI, 벌크선 운임, BDI, HMM]
-    en: [shipping, container rates, freight rates]
+    ko: [해운, 해운사, 컨테이너 운임, SCFI, 벌크선 운임, BDI]
+    en: [shipping, container rates, freight rates, HMM]
   "511":
     name: 항공 여객 운송업
-    ko: [항공사, 항공주, 여객 수요, 국제선, 항공권, 대한항공, 아시아나, 저비용항공, LCC]
-    en: [airline, airlines, passenger demand, air travel]
+    ko: [항공사, 항공주, 여객 수요, 국제선, 항공권, 대한항공, 아시아나, 저비용항공]
+    en: [airline, airlines, passenger demand, air travel, LCC]
   "752":
     name: 여행사 및 기타 여행보조 서비스업
     ko: [여행사, 해외여행, 패키지여행, 여행 수요, 하나투어, 모두투어]

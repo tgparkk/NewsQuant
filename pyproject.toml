@@ -1,0 +1,6 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "db: 실 PostgreSQL(kis_template @ localhost:5433) 필요 — 없으면 skip",
+]

@@ -644,6 +644,39 @@ async def get_global_sentiment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/sector/news-score")
+async def get_sector_news_score(
+    trade_date: Optional[str] = Query(None, description="YYYY-MM-DD (기본: 현재 시각 기준 거래일)"),
+):
+    """섹터 뉴스 점수 조회 (스펙 B 점검용).
+
+    봇(kis-trading-template)은 이 엔드포인트를 쓰지 않는다 — DB 표 sector_news_score 를 직접 읽는다.
+    """
+    from ..sector_news_aggregator import compute_trade_date
+    from ..sector_news_job import now_kst_naive
+
+    if trade_date is None:
+        td = compute_trade_date(now_kst_naive())
+    else:
+        try:
+            td = datetime.strptime(trade_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="trade_date 형식은 YYYY-MM-DD")
+    try:
+        rows = db.get_sector_news_scores(td)
+        computed = [r["computed_at"] for r in rows if r.get("computed_at")]
+        return JSONResponse({
+            "success": True,
+            "trade_date": td.isoformat(),
+            "count": len(rows),
+            "computed_at_max": max(computed) if computed else None,
+            "data": rows,
+        })
+    except Exception as e:
+        logger.error(f"Error getting sector news score: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 def start_api_server(host: str = "127.0.0.1", port: int = 8000):
     """
     API 서버 시작

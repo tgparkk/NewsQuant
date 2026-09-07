@@ -760,6 +760,13 @@ if news:
 
 ---
 
+## 섹터 뉴스 점수 (스펙 B, 2026-09)
+
+`GET /api/sector/news-score?trade_date=YYYY-MM-DD` — 거래일별 KSIC 3자리 섹터 뉴스 점수(`score_signed` −1~+1). `trade_date` 생략 시 현재 시각 기준 거래일.
+점검용이다. 봇은 DB 표 `sector_news_score` 를 직접 읽는다. 설계: `D:\GIT\kis-trading-template\RoboTrader_template\docs\superpowers\specs\2026-09-06-sector-news-boost-design.md`.
+
+---
+
 ## 추가 리소스
 
 - **예제 코드**: `examples/api_client_example.py`
