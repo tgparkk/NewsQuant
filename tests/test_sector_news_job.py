@@ -99,3 +99,33 @@ def test_scheduler_registers_job_and_runs_once_on_start(monkeypatch):
     # 잡은 미기동 스케줄러의 pending 목록에서 조회된다(APScheduler 3.x get_job 은 STOPPED 상태에서 _pending_jobs 를 본다)
     assert s.scheduler.get_job("sector_news_aggregation") is not None
     assert s.scheduler.get_job("smart_collection") is not None
+
+
+def test_start_survives_aggregation_import_error(monkeypatch):
+    import news_scraper.scheduler as sch
+    monkeypatch.setattr(sch, "NewsDatabase", lambda *a, **k: MagicMock())
+    for name in ("NaverFinanceCrawler", "DARTCrawler", "HankyungCrawler", "MKNewsCrawler", "GlobalNewsCrawler"):
+        monkeypatch.setattr(sch, name, lambda *a, **k: MagicMock())
+    s = sch.NewsScheduler()
+    calls = []
+    shutdown_calls = []
+    monkeypatch.setattr(
+        s, "run_sector_news_aggregation",
+        lambda: (_ for _ in ()).throw(ImportError("No module named yaml")),
+    )
+    monkeypatch.setattr(s, "collect_all_news", lambda: calls.append("collect"))
+    monkeypatch.setattr(s.scheduler, "start", lambda: None)
+    monkeypatch.setattr(s.scheduler, "shutdown", lambda *a, **k: shutdown_calls.append(True))
+    s.start()
+    assert calls == ["collect"]
+    assert s.scheduler.get_job("smart_collection") is not None
+    assert shutdown_calls == []
+
+
+def test_job_malformed_yaml_reports_dict_error(tmp_path):
+    bad = tmp_path / "malformed.yaml"
+    bad.write_text("version: [unclosed\nsectors: {}", encoding="utf-8")
+    db = _db()
+    s = run_sector_news_job(db, now=NOW, kw_path=bad)
+    assert not s["ok"] and s["error"].startswith("dict:")
+    db.write_sector_news_result.assert_not_called()

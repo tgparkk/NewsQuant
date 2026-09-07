@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Dict, Optional
 
 import pytz
+import yaml
 
 from .sector_keywords import load_sector_keywords, SectorKeywordError
 from .sector_news_aggregator import (
@@ -37,7 +38,7 @@ def run_sector_news_job(db, now: Optional[datetime] = None, kw_path=None) -> Dic
 
         try:
             kwdict = load_sector_keywords(kw_path)
-        except (SectorKeywordError, OSError) as e:
+        except (SectorKeywordError, OSError, yaml.YAMLError) as e:
             logger.error(f"[섹터뉴스] 사전 로드 실패 — 집계 중단: {e}")
             summary["error"] = f"dict:{e}"
             return summary

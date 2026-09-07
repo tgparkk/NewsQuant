@@ -411,7 +411,10 @@ class NewsScheduler:
             self.collect_all_news()
 
             # 첫 수집 직후 섹터 점수 1회 (07:40 기동 → 09:00 전에 8회 더 돈다)
-            self.run_sector_news_aggregation()
+            try:
+                self.run_sector_news_aggregation()
+            except Exception as e:
+                logger.error(f"[섹터뉴스] 기동 시 1회 집계 실패(수집은 계속): {e}", exc_info=True)
 
             logger.info("스케줄러가 실행 중입니다. Ctrl+C로 종료할 수 있습니다.")
             self.scheduler.start()
