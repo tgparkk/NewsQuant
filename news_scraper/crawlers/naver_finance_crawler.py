@@ -1,13 +1,21 @@
 """
 네이버 금융 뉴스 크롤러
-네이버 금융 증시/경제 뉴스를 수집
+
+finance.naver.com/news/news_list.naver 는 stock.naver.com SPA 로 리다이렉트되어
+HTML 에 뉴스가 «하나도» 없다 (링크 36개가 전부 네비게이션). 그래서 이 크롤러는
+그 SPA 가 쓰는 내부 JSON API 를 직접 호출한다.
+
+API 응답은 HTML 스크래핑보다 정확하다: 발행시각·제목·요약이 구조화되어 있어
+제목 자르기나 날짜 추정 같은 휴리스틱이 필요 없다.
+
+비공식 내부 API 이므로 예고 없이 바뀔 수 있다. 스키마가 어긋나거나 한 건도
+못 모으면 «조용히 0건» 대신 경고를 남긴다 - 구 HTML 크롤러가 200 OK 를 받으며
+몇 달간 0건을 반환하던 실패를 반복하지 않기 위해서다.
 """
 
-import re
-from datetime import datetime
-from typing import List, Dict, Optional
-from urllib.parse import urljoin, urlparse
 import logging
+from datetime import datetime
+from typing import Dict, List, Optional
 
 from ..base_crawler import BaseCrawler
 
@@ -15,594 +23,185 @@ logger = logging.getLogger(__name__)
 
 
 class NaverFinanceCrawler(BaseCrawler):
-    """네이버 금융 뉴스 크롤러"""
-    
-    BASE_URL = "https://finance.naver.com"
-    
-    def __init__(self):
-        super().__init__("naver_finance")
-    
+    """네이버 금융 뉴스 크롤러 (stock.naver.com 내부 JSON API 사용)"""
+
+    LIST_API = "https://stock.naver.com/api/domestic/news/list"
+    FOCUS_API = "https://stock.naver.com/api/domestic/news/focus"
+    ARTICLE_URL = "https://n.news.naver.com/mnews/article/{office_id}/{article_id}"
+    REFERER = "https://stock.naver.com/news/flashnews"
+
+    # 실시간 속보(전체) + 국내증시 핵심 섹션.
+    # 403(해외증시)·406(공시)·429(환율)은 글로벌/DART 크롤러와 겹쳐 제외한다.
+    SECTIONS = [
+        {"api": "list", "key": "FLASHNEWS", "name": "실시간속보"},
+        {"api": "focus", "key": 401, "name": "시황·전망"},
+        {"api": "focus", "key": 402, "name": "기업·종목분석"},
+        {"api": "focus", "key": 404, "name": "채권·선물"},
+    ]
+
+    PAGE_SIZE = 100
+    DEFAULT_DETAIL_FETCH_LIMIT = 30
+
+    def __init__(self, detail_fetch_limit: int = DEFAULT_DETAIL_FETCH_LIMIT, **kwargs):
+        """
+        Args:
+            detail_fetch_limit: 전문을 추가로 받아올 최신 기사 수.
+                                나머지는 API 요약(subcontent)을 본문으로 쓴다.
+        """
+        super().__init__("naver_finance", **kwargs)
+        self.detail_fetch_limit = detail_fetch_limit
+        self.session.headers.update({
+            "Accept": "application/json",
+            "Referer": self.REFERER,
+        })
+
+    # ------------------------------------------------------------------ 목록
     def crawl_news_list(self, max_pages: int = 5) -> List[Dict]:
-        """뉴스 목록 크롤링"""
-        news_list = []
-        global_seen_urls = set()  # 전체 섹션/페이지에 걸친 URL 중복 제거
+        """섹션별로 JSON API 를 훑어 뉴스 목록을 모은다."""
+        date = datetime.now().strftime("%Y%m%d")
+        collected: Dict[str, Dict] = {}  # articleId -> news
 
-        # 네이버 금융 뉴스 섹션들
-        sections = [
-            {'url': 'https://finance.naver.com/news/news_list.naver?mode=LSS2D&section_id=101&section_id2=258', 'name': '증시'},
-            {'url': 'https://finance.naver.com/news/news_list.naver?mode=LSS2D&section_id=101&section_id2=259', 'name': '경제'},
-            {'url': 'https://finance.naver.com/news/news_list.naver?mode=LSS2D&section_id=101&section_id2=260', 'name': '산업'}
-        ]
+        for section in self.SECTIONS:
+            collected.update(self._crawl_section(section, max_pages, date))
 
-        for section in sections:
-            for page in range(1, max_pages + 1):
-                try:
-                    url = f"{section['url']}&page={page}"
-                    soup = self.fetch_page(url)
+        news_list = list(collected.values())
+        if not news_list:
+            # 구 HTML 크롤러는 여기서 조용히 빈 리스트를 돌려주며 몇 달을 보냈다.
+            logger.warning(
+                f"[{self.source_name}] 0건 수집 - API 응답 형식이 바뀌었을 수 있다"
+            )
+            return []
 
-                    if not soup:
-                        continue
-
-                    # 네이버 금융은 a 태그로 뉴스 링크를 직접 찾는 방식이 효과적
-                    # 다양한 뉴스 링크 패턴 찾기
-                    all_links = soup.find_all('a', href=True)
-                    news_links = []
-                    seen_urls = set()  # 페이지 내 중복 제거용
-                    
-                    for link in all_links:
-                        href = link.get('href', '')
-                        # 뉴스 관련 링크 패턴들
-                        is_news_link = (
-                            '/news/read' in href or 
-                            '/news/news_view' in href or
-                            '/news/news_read' in href or
-                            (href.startswith('/news/') and 'article_id' in href) or
-                            (href.startswith('/news/') and len(href) > 20)  # 긴 링크는 뉴스일 가능성 높음
-                        )
-                        
-                        if not is_news_link:
-                            continue
-                        
-                        # 절대 URL로 변환
-                        if href.startswith('http'):
-                            full_url = href
-                        else:
-                            full_url = urljoin(self.BASE_URL, href)
-                        
-                        # 중복 제거 (페이지 내 + 전체 섹션 간)
-                        if full_url in seen_urls or full_url in global_seen_urls:
-                            continue
-                        seen_urls.add(full_url)
-                        global_seen_urls.add(full_url)
-                        
-                        # 제목 추출 - 링크 자체의 텍스트만 사용 (부모에서 찾지 않음)
-                        title = self.extract_text(link)
-                        
-                        # 제목 정리: 너무 긴 경우 잘라내기 (여러 뉴스가 합쳐진 경우 방지)
-                        if title:
-                            # 제목이 200자 이상이면 여러 뉴스가 합쳐진 것으로 간주
-                            if len(title) > 200:
-                                # 첫 번째 의미있는 부분만 사용
-                                lines = [line.strip() for line in title.split('\n') if line.strip() and len(line.strip()) >= 10]
-                                if lines:
-                                    title = lines[0]
-                                else:
-                                    # 줄바꿈이 없으면 첫 100자만 사용
-                                    title = title[:100].strip()
-                            
-                            # 특수 문자나 구분자로 여러 제목이 합쳐진 경우 처리
-                            # '|' 또는 '...' 또는 날짜 패턴으로 구분된 경우
-                            if '|' in title and len(title) > 100:
-                                # 첫 번째 '|' 이전만 사용
-                                title = title.split('|')[0].strip()
-                            
-                            # 날짜 패턴으로 구분된 경우 (예: "제목...2025-12-16 18:07")
-                            date_pattern = re.search(r'\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}', title)
-                            if date_pattern and date_pattern.start() > 0:
-                                title = title[:date_pattern.start()].strip()
-                        
-                        # 제목이 너무 짧거나 없으면 스킵
-                        if not title or len(title) < 10:
-                            continue
-                        
-                        # 부모 요소에서 날짜와 요약 찾기
-                        parent = link.parent
-                        date_str = ""
-                        summary = ""
-                        
-                        # 날짜 찾기 (부모 요소에서)
-                        for _ in range(3):  # 최대 3단계 상위 요소까지 검색
-                            if parent:
-                                date_tag = parent.find(class_=re.compile(r'date|time|pub|reg')) or \
-                                          parent.find('time') or \
-                                          parent.find('span', class_=re.compile(r'date|time'))
-                                if date_tag:
-                                    date_str = self.extract_text(date_tag)
-                                    if date_tag.get('datetime'):
-                                        date_str = date_tag.get('datetime')
-                                    break
-                                
-                                # 텍스트에서 날짜 패턴 찾기
-                                parent_text = self.extract_text(parent)
-                                date_match = re.search(r'\d{4}\.\d{2}\.\d{2}\s+\d{2}:\d{2}', parent_text)
-                                if date_match:
-                                    date_str = date_match.group()
-                                    break
-                                
-                                parent = parent.parent if hasattr(parent, 'parent') else None
-                            else:
-                                break
-                        
-                        # 요약 찾기 (부모 요소에서) - 더 강화된 버전
-                        parent = link.parent
-                        for _ in range(5):  # 더 넓은 범위 검색
-                            if parent:
-                                # 다양한 요약 패턴 시도
-                                summary_tag = (parent.find(class_=re.compile(r'summary|desc|lead|preview|article|text', re.I)) or
-                                             parent.find('p', class_=re.compile(r'summary|desc|lead|preview', re.I)) or
-                                             parent.find('span', class_=re.compile(r'summary|desc|lead|preview', re.I)) or
-                                             parent.find('div', class_=re.compile(r'summary|desc|lead|preview', re.I)))
-                                
-                                if summary_tag:
-                                    summary = self.extract_text(summary_tag)
-                                    if len(summary) > 20:  # 의미있는 요약만
-                                        break
-                                
-                                # 부모의 전체 텍스트에서 요약 추출 시도
-                                parent_text = self.extract_text(parent)
-                                # 제목 다음에 오는 텍스트가 요약일 가능성
-                                if title in parent_text:
-                                    parts = parent_text.split(title, 1)
-                                    if len(parts) > 1:
-                                        potential_summary = parts[1].strip()
-                                        # 요약으로 보이는 텍스트 (20자 이상, 제목보다 짧음)
-                                        if 20 <= len(potential_summary) < len(title) * 3:
-                                            summary = potential_summary[:200]  # 최대 200자
-                                            break
-                                
-                                parent = parent.parent if hasattr(parent, 'parent') else None
-                            else:
-                                break
-                        
-                        published_at = self.parse_date_string(date_str)
-                        
-                        news_data = {
-                            'news_id': self.generate_news_id(full_url, title),
-                            'title': title,
-                            'content': summary,
-                            'published_at': published_at,
-                            'source': self.source_name,
-                            'category': section['name'],
-                            'url': full_url,
-                            'related_stocks': self.extract_stock_codes(title + " " + summary),
-                            'sentiment_score': None
-                        }
-                        
-                        news_links.append(news_data)
-                    
-                    # 중복 제거 (제목 기준)
-                    unique_news = {}
-                    for news in news_links:
-                        title_key = news['title']
-                        if title_key not in unique_news:
-                            unique_news[title_key] = news
-                    
-                    news_list.extend(unique_news.values())
-                    
-                    logger.info(f"[{self.source_name}] {section['name']} 섹션 {page}페이지 크롤링 완료: {len(unique_news)}개 뉴스 수집")
-                    
-                except Exception as e:
-                    logger.error(f"[{self.source_name}] 페이지 {page} 크롤링 오류: {e}")
-                    continue
-        
-        # 상세 내용 크롤링 (모든 뉴스에 대해 수행)
-        for news in news_list:
-            try:
-                summary = news.get('content') or ""  # 목록 페이지에서 추출한 요약
-                detail = self.crawl_news_detail(news['url'])
-
-                if detail:
-                    content = detail.get('content') or ""
-                    
-                    # 본문이 충분히 길면 본문 사용
-                    if len(content) >= 100:
-                        news['content'] = content
-                        logger.debug(f"[{self.source_name}] 본문 사용: {news.get('url', '')} (길이: {len(content)})")
-                    # 본문이 50자 이상이면 본문 사용
-                    elif len(content) >= 50:
-                        news['content'] = content
-                        logger.debug(f"[{self.source_name}] 본문 사용 (짧음): {news.get('url', '')} (길이: {len(content)})")
-                    # 본문이 짧지만 요약과 합치면 의미있으면 병합
-                    elif len(content) >= 20 and len(summary) >= 20:
-                        merged = (content + " " + summary).strip()
-                        news['content'] = merged
-                        logger.debug(f"[{self.source_name}] 본문+요약 병합: {news.get('url', '')} (길이: {len(merged)})")
-                    # 본문이 없거나 너무 짧으면 요약 사용
-                    elif len(summary) >= 30:  # 요약 최소 길이 증가
-                        news['content'] = summary
-                        logger.debug(f"[{self.source_name}] 요약 사용: {news.get('url', '')} (길이: {len(summary)})")
-                    # 요약도 짧으면 본문이라도 저장
-                    elif len(content) >= 10:
-                        news['content'] = content
-                        logger.debug(f"[{self.source_name}] 짧은 본문 사용: {news.get('url', '')} (길이: {len(content)})")
-                    # 요약도 없으면 본문이라도 저장 (빈 문자열일 수 있음)
-                    else:
-                        news['content'] = content or summary or ""
-                        if not news['content']:
-                            logger.warning(f"[{self.source_name}] 내용 없음: {news.get('url', '')}")
-
-                    # 본문에서도 종목 코드 추출하여 기존 코드와 합치기
-                    content_codes = self.extract_stock_codes(content)
-                    existing_codes = news.get('related_stocks', '')
-                    if content_codes:
-                        if existing_codes:
-                            # 기존 코드와 합치기 (중복 제거)
-                            all_codes = set(existing_codes.split(',')) | set(content_codes.split(','))
-                            news['related_stocks'] = ','.join(sorted(all_codes))
-                        else:
-                            news['related_stocks'] = content_codes
-                else:
-                    # 상세 페이지 크롤링 실패 시에도 요약이 있으면 반드시 사용
-                    # 요약이 20자 이상이면 저장
-                    if len(summary) >= 20:
-                        news['content'] = summary
-                        logger.warning(f"[{self.source_name}] 상세 페이지 실패, 요약 사용: {news.get('url', '')} (요약 길이: {len(summary)})")
-                    elif len(summary) >= 10:
-                        news['content'] = summary
-                        logger.warning(f"[{self.source_name}] 상세 페이지 실패, 짧은 요약 사용: {news.get('url', '')} (요약 길이: {len(summary)})")
-                    else:
-                        # 요약도 없으면 빈 문자열이라도 저장 (나중에 재처리 가능하도록)
-                        news['content'] = summary or ""
-                        logger.warning(f"[{self.source_name}] 상세 페이지 실패, 요약 정보도 없음: {news.get('url', '')}")
-            except Exception as e:
-                logger.debug(f"[{self.source_name}] 상세 크롤링 오류: {news.get('url', '')} - {e}")
-                # 오류 발생 시에도 요약 정보라도 저장
-                summary = news.get('content') or ""
-                if len(summary) >= 5:
-                    news['content'] = summary
-                else:
-                    news['content'] = summary or ""
-                continue
-        
+        self._enrich_with_bodies(news_list)
+        logger.info(f"[{self.source_name}] 목록 수집 완료: {len(news_list)}건")
         return news_list
-    
-    def crawl_news_detail(self, url: str) -> Optional[Dict]:
-        """뉴스 상세 내용 크롤링"""
-        soup = self.fetch_page(url)
-        
-        if not soup:
-            logger.warning(f"[{self.source_name}] 페이지 가져오기 실패: {url}")
-            return None
-        
-        # JavaScript 리다이렉트 처리
-        # 예: <SCRIPT>top.location.href='https://n.news.naver.com/mnews/article/018/0005236061';</SCRIPT>
-        script_content = str(soup)
-        if 'top.location.href' in script_content and len(script_content) < 1000:
-            redirect_match = re.search(r"top\.location\.href\s*=\s*['\"]([^'\"]+)['\"]", script_content)
-            if redirect_match:
-                new_url = redirect_match.group(1)
-                logger.debug(f"[{self.source_name}] JavaScript 리다이렉트 감지: {url} -> {new_url}")
-                soup = self.fetch_page(new_url)
-                if not soup:
-                    logger.warning(f"[{self.source_name}] 리다이렉트 페이지 가져오기 실패: {new_url}")
-                    return None
-                # URL 업데이트 (로깅용)
-                url = new_url
-        
-        try:
-            content = ""
-            article_body = None
-            best_content = ""  # 가장 긴 내용 저장
-            
-            # 네이버 금융 본문 추출 - 다양한 선택자 순차 시도 (개선된 버전)
-            selectors = [
-                # 1순위: 네이버 금융/뉴스 최신 패턴
-                lambda s: s.find('article', id='dic_area'),  # 네이버 뉴스 모바일/PC 공통 (가장 정확)
-                lambda s: s.find('div', id='dic_area'),      # 네이버 뉴스 일반 섹션
-                lambda s: s.find('div', id='articleBodyContents'),
-                lambda s: s.find('div', id='newsEndContents'),
-                lambda s: s.find('div', id='articleBody'),
-                lambda s: s.find('div', class_='article_body'),
-                lambda s: s.find('div', class_='news_read'),
-                lambda s: s.find('div', id='news_read'),
-                # 추가된 네이버 금융/뉴스 패턴
-                lambda s: s.find('div', class_='article_view'),
-                lambda s: s.find('div', class_='article_content'),
-                lambda s: s.find('div', id='articeBody'), # 오타 대응
-                lambda s: s.find('div', class_='view_content'),
-                # 2순위: 연합뉴스, 뉴스1 등 언론사별 특정 패턴
-                lambda s: s.find('div', class_='article_txt'),
-                lambda s: s.find('div', class_='article-body'),
-                lambda s: s.find('div', class_=re.compile(r'art_body|post_content|content_area', re.I)),
-                # 3순위: 일반적인 본문 패턴
-                lambda s: s.find('article'),
-                lambda s: s.find('main'),
-            ]
-            
-            # 먼저 페이지 내의 모든 iframe 확인 및 처리
-            iframes = soup.find_all('iframe')
-            for iframe in iframes:
-                iframe_src = iframe.get('src', '')
-                if iframe_src:
-                    # 절대 URL로 변환
-                    if not iframe_src.startswith('http'):
-                        iframe_src = urljoin(self.BASE_URL, iframe_src)
-                    
-                    # 네이버 금융 내부 iframe인 경우 크롤링 시도
-                    if 'naver.com' in iframe_src or 'finance.naver.com' in iframe_src:
-                        try:
-                            logger.debug(f"[{self.source_name}] 네이버 내부 iframe 크롤링 시도: {iframe_src}")
-                            iframe_soup = self.fetch_page(iframe_src)
-                            if iframe_soup:
-                                # iframe 내부에서 본문 찾기
-                                iframe_content = self._extract_content_from_soup(iframe_soup)
-                                if len(iframe_content) > len(best_content):
-                                    best_content = iframe_content
-                                    content = iframe_content
-                                    if len(content) >= 100:
-                                        break
-                        except Exception as e:
-                            logger.debug(f"[{self.source_name}] iframe 크롤링 오류: {iframe_src} - {e}")
-            
-            # 각 선택자 시도
-            for selector in selectors:
-                try:
-                    article_body = selector(soup)
-                    if article_body:
-                        # iframe인 경우는 이미 처리했으므로 스킵
-                        if article_body.name == 'iframe':
-                            continue
-                        
-                        # 광고나 불필요한 요소 제거
-                        for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside', 'div', 'span'], 
-                                                          class_=re.compile(r'ad|advertisement|banner|sponsor|promotion|related|recommend|news_end_btn|end_photo_org|photo_area', re.I)):
-                            tag.decompose()
-                        for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside', 'div'], 
-                                                          id=re.compile(r'ad|advertisement|banner|sponsor|promotion', re.I)):
-                            tag.decompose()
-                        # 일반적인 불필요 요소 제거
-                        for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside']):
-                            tag.decompose()
-                        
-                        # 본문 텍스트 추출
-                        temp_content = self.extract_text(article_body)
-                        
-                        # 가장 긴 내용 저장
-                        if len(temp_content) > len(best_content):
-                            best_content = temp_content
-                            content = temp_content
-                        
-                        # 내용이 충분히 길면 성공으로 간주
-                        if len(content) >= 100:  # 100자 이상이면 충분한 본문으로 간주
-                            break
-                except Exception as e:
-                    logger.debug(f"[{self.source_name}] 선택자 시도 오류: {e}")
-                    continue
-            
-            # iframe 내부에서 찾은 내용이 있으면 사용
-            if len(best_content) > len(content):
-                content = best_content
-            
-            # 여전히 내용이 짧으면 추가 시도
-            if len(content) < 100:
-                # 본문 영역을 더 넓게 찾기
-                main_content = soup.find('main') or soup.find('div', class_=re.compile(r'main|container', re.I))
-                if main_content:
-                    # 본문 관련 요소만 추출
-                    for tag in main_content.find_all(['script', 'style', 'iframe', 'ins', 'aside', 'header', 'footer', 'nav', 'div'], 
-                                                      class_=re.compile(r'header|footer|nav|menu|sidebar|ad|advertisement|comment', re.I)):
-                        tag.decompose()
-                    temp_content = self.extract_text(main_content)
-                    if len(temp_content) > len(content):
-                        content = temp_content
-                        best_content = temp_content
-                
-                # 마지막 시도: 모든 p 태그에서 본문 추출 (강화된 버전)
-                if len(content) < 100:
-                    # 본문 영역 내의 p 태그 우선 추출
-                    article_area = soup.find('div', id=re.compile(r'article|news|content|body', re.I)) or \
-                                  soup.find('article') or \
-                                  soup.find('main') or \
-                                  soup.find('div', class_=re.compile(r'article|news|content|body', re.I))
-                    
-                    search_area = article_area if article_area else soup
-                    
-                    all_paragraphs = search_area.find_all('p')
-                    paragraph_texts = []
-                    seen_texts = set()  # 중복 제거
-                    
-                    for p in all_paragraphs:
-                        p_text = self.extract_text(p).strip()
-                        # 광고나 불필요한 텍스트 필터링
-                        if (len(p_text) > 30 and  # 최소 길이 증가
-                            p_text not in seen_texts and
-                            not any(keyword in p_text for keyword in [
-                                '광고', 'advertisement', 'sponsor', '관련기사', '추천기사', 
-                                '기사제공', '무단전재', '저작권', 'copyright',
-                                '댓글', '로그인', '회원가입', '구독', '구독하기'
-                            ])):
-                            paragraph_texts.append(p_text)
-                            seen_texts.add(p_text)
-                    
-                    if paragraph_texts:
-                        combined_content = ' '.join(paragraph_texts)
-                        if len(combined_content) > len(content):
-                            content = combined_content
-                            best_content = combined_content
-                    
-                    # 추가 시도: div 태그 내의 텍스트도 추출 (p 태그가 없는 경우)
-                    if len(content) < 100:
-                        div_texts = []
-                        for div in search_area.find_all('div', class_=re.compile(r'text|content|body|article', re.I)):
-                            div_text = self.extract_text(div).strip()
-                            if (len(div_text) > 50 and 
-                                div_text not in seen_texts and
-                                not any(keyword in div_text for keyword in [
-                                    '광고', 'advertisement', 'sponsor', '관련기사', '추천기사',
-                                    '기사제공', '무단전재', '저작권', 'copyright'
-                                ])):
-                                div_texts.append(div_text)
-                                seen_texts.add(div_text)
-                        
-                        if div_texts:
-                            combined_content = ' '.join(div_texts)
-                            if len(combined_content) > len(content):
-                                content = combined_content
-                                best_content = combined_content
-                    
-                    # 최종 시도: 페이지의 모든 텍스트 노드에서 본문 추출 (매우 넓은 범위)
-                    if len(content) < 50:
-                        # 스크립트, 스타일, 메뉴 등 제외하고 본문 영역 찾기
-                        body_tag = soup.find('body')
-                        if body_tag:
-                            # 본문이 아닌 영역 제거
-                            for tag in body_tag.find_all(['script', 'style', 'nav', 'header', 'footer', 'aside', 'iframe']):
-                                tag.decompose()
-                            
-                            # 클래스나 ID에 본문 관련 키워드가 있는 div만 추출
-                            potential_content_divs = body_tag.find_all('div', 
-                                class_=re.compile(r'article|news|content|body|text|view|read', re.I))
-                            
-                            for div in potential_content_divs:
-                                div_text = self.extract_text(div).strip()
-                                # 충분히 긴 텍스트만 본문으로 간주
-                                if len(div_text) > 100 and div_text not in seen_texts:
-                                    # 본문으로 보이는 텍스트인지 확인 (광고나 메뉴 텍스트 제외)
-                                    if not any(keyword in div_text[:200] for keyword in [
-                                        '메뉴', '로그인', '회원가입', '구독', '광고', 'advertisement'
-                                    ]):
-                                        if len(div_text) > len(content):
-                                            content = div_text
-                                            best_content = div_text
-                                            seen_texts.add(div_text)
-                                            if len(content) >= 200:  # 충분한 본문을 찾으면 중단
-                                                break
-            
-            # 날짜 정보 재확인
-            date_tag = soup.find('span', class_='tah') or \
-                      soup.find('div', class_='article_info') or \
-                      soup.find('div', class_=re.compile(r'article.*info|news.*info', re.I)) or \
-                      soup.find('time') or \
-                      soup.find(class_=re.compile(r'date|time|published', re.I))
-            
-            date_str = self.extract_text(date_tag) if date_tag else ""
-            if date_tag and date_tag.get('datetime'):
-                date_str = date_tag.get('datetime')
-            
-            published_at = self.parse_date_string(date_str)
-            
-            # 내용이 없거나 너무 짧으면 로깅 (하지만 빈 문자열이라도 반환)
-            if len(content) < 50:
-                logger.warning(f"[{self.source_name}] 본문 추출 실패 또는 내용 부족: {url} (길이: {len(content)})")
-                # 디버깅을 위해 페이지 구조 일부 로깅
-                if logger.isEnabledFor(logging.DEBUG):
-                    # 주요 div ID/클래스 확인
-                    main_divs = soup.find_all('div', id=True)[:5]
-                    main_classes = soup.find_all('div', class_=True)[:5]
-                    logger.debug(f"  주요 div ID: {[d.get('id') for d in main_divs]}")
-                    logger.debug(f"  주요 div 클래스: {[d.get('class') for d in main_classes]}")
-            else:
-                logger.info(f"[{self.source_name}] 본문 추출 성공: {url} (길이: {len(content)})")
-            
-            # 최종적으로 가장 긴 내용 사용
-            final_content = best_content if len(best_content) > len(content) else content
-            
-            # 내용이 없어도 빈 문자열 반환 (요약 정보는 상위에서 처리)
-            return {
-                'content': final_content,
-                'published_at': published_at
-            }
-            
-        except Exception as e:
-            logger.error(f"[{self.source_name}] 상세 내용 크롤링 오류: {url} - {e}", exc_info=True)
-            # 오류 발생 시에도 None 대신 빈 내용 반환 (요약 정보 활용 가능하도록)
-            return {
-                'content': '',
-                'published_at': datetime.now().isoformat()
-            }
-    
-    def parse_date_string(self, date_str: str) -> str:
-        """네이버 금융 날짜 형식 파싱"""
-        if not date_str:
-            return datetime.now().isoformat()
-        
-        try:
-            # "2024.01.15 14:30" 형식
-            date_pattern = re.search(r'(\d{4})\.(\d{2})\.(\d{2})\s+(\d{2}):(\d{2})', date_str)
-            if date_pattern:
-                year, month, day, hour, minute = date_pattern.groups()
-                return f"{year}-{month}-{day}T{hour}:{minute}:00"
-            
-            # "2024.01.15" 형식
-            date_pattern = re.search(r'(\d{4})\.(\d{2})\.(\d{2})', date_str)
-            if date_pattern:
-                year, month, day = date_pattern.groups()
-                return f"{year}-{month}-{day}T00:00:00"
-            
-            # "01.15 14:30" 형식 (올해 날짜)
-            date_pattern = re.search(r'(\d{2})\.(\d{2})\s+(\d{2}):(\d{2})', date_str)
-            if date_pattern:
-                month, day, hour, minute = date_pattern.groups()
-                year = datetime.now().year
-                return f"{year}-{month}-{day}T{hour}:{minute}:00"
-            
-        except Exception as e:
-            logger.debug(f"날짜 파싱 오류: {date_str} - {e}")
-        
-        return datetime.now().isoformat()
-    
-    def _extract_content_from_soup(self, soup) -> str:
-        """Soup 객체에서 본문 추출 (재사용 가능한 메서드)"""
-        content = ""
-        
-        # 본문 추출 선택자들
-        content_selectors = [
-            lambda s: s.find('div', id='articleBodyContents'),
-            lambda s: s.find('div', id='newsEndContents'),
-            lambda s: s.find('div', id='articleBody'),
-            lambda s: s.find('div', class_='articleBody'),
-            lambda s: s.find('article'),
-            lambda s: s.find('div', class_=re.compile(r'article.*body|article.*content', re.I)),
-            lambda s: s.find('div', id=re.compile(r'article.*body|article.*content', re.I)),
-            lambda s: s.find('div', class_=re.compile(r'content|body|text', re.I)),
-        ]
-        
-        for selector in content_selectors:
-            try:
-                article_body = selector(soup)
-                if article_body:
-                    # 불필요한 요소 제거
-                    for tag in article_body.find_all(['script', 'style', 'iframe', 'ins', 'aside']):
-                        tag.decompose()
-                    
-                    temp_content = self.extract_text(article_body)
-                    if len(temp_content) > len(content):
-                        content = temp_content
-                        if len(content) >= 100:
-                            break
-            except:
-                continue
-        
-        # p 태그에서 추출 시도
-        if len(content) < 100:
-            paragraphs = soup.find_all('p')
-            paragraph_texts = []
-            for p in paragraphs:
-                p_text = self.extract_text(p).strip()
-                if len(p_text) > 30 and not any(keyword in p_text for keyword in [
-                    '광고', 'advertisement', 'sponsor', '관련기사', '추천기사'
-                ]):
-                    paragraph_texts.append(p_text)
-            
-            if paragraph_texts:
-                combined = ' '.join(paragraph_texts)
-                if len(combined) > len(content):
-                    content = combined
-        
-        return content
-    
-    def extract_stock_codes(self, text: str) -> str:
-        """텍스트에서 종목 코드 추출 (부모 클래스의 개선된 로직 사용)"""
-        # 부모 클래스의 extract_stock_codes 사용 (종목명 매핑 포함)
-        return super().extract_stock_codes(text)
 
+    def _crawl_section(self, section: Dict, max_pages: int, date: str) -> Dict[str, Dict]:
+        """한 섹션을 페이지 단위로 훑는다.
+
+        page 를 계속 늘려도 같은 데이터가 돌아오는 구간이 있어(실측: page=10 과
+        page=50 이 동일), 새 기사가 하나도 없는 페이지를 만나면 멈춘다.
+        """
+        found: Dict[str, Dict] = {}
+
+        for page in range(1, max_pages + 1):
+            articles = self._fetch_articles(section, page, date)
+            if not articles:
+                break
+
+            fresh = 0
+            for raw in articles:
+                news = self._to_news(raw, section["name"])
+                if news is None:
+                    continue
+                if news["_article_id"] in found:
+                    continue
+                found[news["_article_id"]] = news
+                fresh += 1
+
+            if fresh == 0:
+                # 이 페이지가 통째로 중복이다 - 더 넘겨도 새 기사는 없다.
+                break
+
+        return found
+
+    def _fetch_articles(self, section: Dict, page: int, date: str) -> List[Dict]:
+        """API 를 한 번 호출해 기사 배열을 꺼낸다."""
+        if section["api"] == "list":
+            url = self.LIST_API
+            params = {"category": section["key"]}
+        else:
+            url = self.FOCUS_API
+            params = {"sid": section["key"], "enableFallback": "true"}
+
+        params.update({"page": page, "pageSize": self.PAGE_SIZE, "date": date})
+        payload = self.fetch_json(url, params=params)
+
+        if payload is None:
+            # fetch_json 이 이미 경고를 남겼다 (차단·오류·비 JSON).
+            return []
+
+        if not isinstance(payload, dict) or "articles" not in payload:
+            logger.warning(
+                f"[{self.source_name}] 응답에 articles 키가 없다 "
+                f"(섹션={section['name']}, 키={list(payload)[:5] if isinstance(payload, dict) else type(payload).__name__})"
+            )
+            return []
+
+        return payload["articles"] or []
+
+    def _to_news(self, raw: Dict, section_name: str) -> Optional[Dict]:
+        """API 기사 한 건을 news 레코드로 옮긴다. 필수 필드가 없으면 None."""
+        office_id = raw.get("officeId")
+        article_id = raw.get("articleId")
+        title = (raw.get("title") or "").strip()
+        published_at = self._parse_api_datetime(raw.get("datetime"))
+
+        if not (office_id and article_id and title and published_at):
+            logger.debug(f"[{self.source_name}] 필수 필드 누락으로 건너뜀: {raw.get('articleId')}")
+            return None
+
+        url = self.ARTICLE_URL.format(office_id=office_id, article_id=article_id)
+        summary = (raw.get("subcontent") or "").strip()
+
+        return {
+            "news_id": self.generate_news_id(url, title),
+            "title": title,
+            "content": summary,
+            "published_at": published_at,
+            "source": self.source_name,
+            "category": section_name,
+            "url": url,
+            "related_stocks": self.extract_stock_codes(f"{title} {summary}"),
+            "sentiment_score": None,
+            # 내부용: 섹션 간 중복 제거와 본문 수집 정렬에 쓰고 저장 전에 뺀다.
+            "_article_id": article_id,
+        }
+
+    @staticmethod
+    def _parse_api_datetime(value: Optional[str]) -> Optional[str]:
+        """'2026-09-10 23:45:09' -> ISO 형식. 형식이 다르면 None."""
+        if not value:
+            return None
+        try:
+            return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").isoformat()
+        except (ValueError, TypeError):
+            logger.debug(f"[naver_finance] 발행시각 형식을 모르겠다: {value!r}")
+            return None
+
+    # ------------------------------------------------------------------ 본문
+    def _enrich_with_bodies(self, news_list: List[Dict]) -> None:
+        """최신 N 건만 전문을 받아 본문을 채운다.
+
+        나머지는 API 요약(~300자)을 그대로 쓴다. 사이클당 수백 건의 상세 요청은
+        시간 예산을 통째로 잡아먹는다 - 구 크롤러가 정확히 그랬다.
+        """
+        news_list.sort(key=lambda n: n["published_at"], reverse=True)
+
+        for news in news_list[: self.detail_fetch_limit]:
+            try:
+                detail = self.crawl_news_detail(news["url"])
+            except Exception as e:
+                logger.debug(f"[{self.source_name}] 본문 수집 오류 {news['url']}: {e}")
+                continue
+
+            body = (detail or {}).get("content") or ""
+            # 전문이 요약보다 짧으면 잘린 것이다 - 요약을 지키는 편이 낫다.
+            if len(body) > len(news["content"]):
+                news["content"] = body
+
+        for news in news_list:
+            news.pop("_article_id", None)
+
+    def crawl_news_detail(self, url: str) -> Optional[Dict]:
+        """기사 페이지에서 본문을 뽑는다."""
+        soup = self.fetch_page(url)
+        if soup is None:
+            return None
+
+        body = soup.select_one("#dic_area") or soup.select_one("#newsct_article")
+        if body is None:
+            logger.debug(f"[{self.source_name}] 본문 영역을 못 찾음: {url}")
+            return None
+
+        return {"content": body.get_text(separator=" ", strip=True)}
