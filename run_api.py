@@ -1,16 +1,9 @@
 import logging
-import sys
+from news_scraper.logging_setup import setup_logging
 from news_scraper.api.server import start_api_server
 
 # 로깅 설정
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('news_scraper.log', encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+setup_logging()
 
 logger = logging.getLogger(__name__)
 

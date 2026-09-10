@@ -94,13 +94,24 @@ class NewsScheduler:
         Returns:
             (source_name, news_list, error_message) 튜플
         """
+        logger.info(f"[{crawler.source_name}] 크롤링 시작...")
+        # 사이클 경계를 연다: 통계 초기화, 시간 예산 시계 시작, 회로 재설정.
+        # 구형 크롤러(RSS 기반 등)는 이 훅이 없을 수 있으므로 있을 때만 부른다.
+        if hasattr(crawler, 'begin_cycle'):
+            crawler.begin_cycle()
+
         try:
-            logger.info(f"[{crawler.source_name}] 크롤링 시작...")
             news_list = crawler.crawl_news_list(max_pages=3)
             return (crawler.source_name, news_list or [], None)
         except Exception as e:
             logger.error(f"[{crawler.source_name}] 크롤링 오류: {e}", exc_info=True)
             return (crawler.source_name, [], str(e))
+        finally:
+            # 터진 사이클이야말로 «무슨 일이 있었는지»가 필요하다.
+            # 143만 줄을 grep 하지 않고 어디가 아픈지 보기 위한 한 줄.
+            summary = crawler.cycle_summary() if hasattr(crawler, 'cycle_summary') else ""
+            if summary:
+                logger.info(summary)
     
     def _handle_crawler_result(self, source_name: str, news_list: List,
                                error_msg: Optional[str], recovered: bool = False) -> int:

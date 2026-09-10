@@ -7,18 +7,12 @@ import sys
 from pathlib import Path
 from threading import Thread
 
+from news_scraper.logging_setup import setup_logging
 from news_scraper.scheduler import NewsScheduler
 from news_scraper.database import NewsDatabase
 
 # 로깅 설정
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('news_scraper.log', encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+setup_logging()
 
 logger = logging.getLogger(__name__)
 
