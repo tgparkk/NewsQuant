@@ -67,15 +67,17 @@ def fetch_naver_stock_list():
                             stock_code = href.split('code=')[1].split('&')[0]
                             
                             if stock_code and stock_name:
+                                # 접미사를 잘라 별칭을 만들지 않는다.
+                                #
+                                # "대상홀딩스"→"대상", "매일홀딩스"→"매일",
+                                # "하나제약"→"하나" 처럼 일상어와 충돌하는 별칭이
+                                # 98개 생겨 실측 기사 440건의 추출 상위 5개 코드가
+                                # 전부 오탐이 됐다. 게다가 별칭이 «다른 회사»를
+                                # 덮어써서 골프존(215000)·F&F(383220)·대상(001680)
+                                # 은 사전에서 아예 사라졌다.
+                                # 짧은 통칭이 필요하면 base_crawler.py 의
+                                # STOCK_NAME_TO_CODE_BASE 에 사람이 검수해 넣는다.
                                 stock_dict[stock_name] = stock_code
-                                
-                                # 흔한 변형 추가
-                                # "삼성전자" → "삼성"
-                                for suffix in ['전자', '제약', '화학', '홀딩스', '그룹', '주식회사', '㈜']:
-                                    if suffix in stock_name:
-                                        base_name = stock_name.replace(suffix, '').strip()
-                                        if base_name and len(base_name) >= 2:
-                                            stock_dict[base_name] = stock_code
                     
                     time.sleep(0.3)  # 요청 간 딜레이
                     
