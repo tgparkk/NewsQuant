@@ -61,6 +61,17 @@ def load_returns(db, start: date, end: date) -> pd.DataFrame:
     요청 범위 «마지막» 며칠의 신호는 h1/h5 를 구할 가격이 아직 안 읽혀
     전부 NaN 이 된다. 진입(entry) 자체는 마지막 WHERE 로 [start, end]
     안으로만 되돌린다 — 반환되는 trade_date 는 항상 요청 범위 안이다.
+
+    **알려진 한계(I3, 문서화만 하고 고치지 않음)** — h1/h5 는 «다음 거래일»이
+    아니라 «row_number() 로 센 다음 관측행» 이다. 이 함수는 `open > 0 AND
+    close > 0` 필터를 row_number() 계산 «전» 에 건다(WITH p AS (... WHERE
+    open > 0 AND close > 0), row_number() OVER (...)). 그래서 거래정지 등으로
+    daily_prices 에 그 종목의 정상 행이 하루 빠지면, rn 시퀀스에 구멍이
+    아니라 «다음에 있는 행» 이 그대로 rn+1 이 되어 버린다 — 즉 h1 이 실제로는
+    D+2 종가, h5 는 D+6 종가를 가리키게 되는데 이 함수는 그 차이를 구별할
+    방법이 없다(반환값에 "몇 거래일 뒤인지"를 남기지 않는다). daily_prices 는
+    다른 저장소가 소유하는 테이블이라(I2 참고) 결측 빈도를 이쪽에서 통제할
+    수 없다 — 이 한계는 runner 의 리포트 푸터에도 적는다.
     """
     padded_end = end + timedelta(days=_FORWARD_PAD_DAYS)
     conn = db.get_connection()

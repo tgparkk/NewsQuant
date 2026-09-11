@@ -93,6 +93,16 @@ def trading_days(db, start: date, end: date) -> List[date]:
     daily_prices 는 거래소 캘린더가 아니다. 주말(요일) 과 잡음성 소수
     행(하루 행 수 < MIN_ROWS_PER_DAY) 을 둘 다 걸러낸다 — 둘 중 하나만
     쓰면 «주말인데 행이 많은» 경우나 «평일인데 잡음뿐인» 경우를 놓친다.
+
+    daily_prices 는 이 저장소가 아니라 다른 저장소(kis-trading-template)가
+    소유한다(I2) — 지금은 date 컬럼이 TEXT 'YYYY-MM-DD' 지만, 그쪽이 언젠가
+    DATE 로 마이그레이션하면 psycopg2 가 datetime.date 를 그대로 돌려준다.
+    그 값을 strptime(str, ...) 에 넣으면 TypeError 가 나는데, 예전 코드는
+    그것도 «형식이 이상한 값» 으로 잡아 건너뛰었다 — 그러면 모든 날이
+    조용히 스킵되어 이 함수가 빈 리스트를 돌려주고, 백테스트 전체가
+    아무 경고 없이 결과 0행을 낸다. 그래서 값이 이미 date(datetime 포함)면
+    그대로 쓰고, strptime·TypeError 캐치는 «진짜 문자열» 경로에만 남긴다 —
+    정말로 깨진 텍스트만 여기서 걸러진다.
     """
     conn = db.get_connection()
     try:
@@ -102,13 +112,16 @@ def trading_days(db, start: date, end: date) -> List[date]:
                            GROUP BY date ORDER BY date""",
                         (start.isoformat(), end.isoformat()))
             out = []
-            for date_str, cnt in cur.fetchall():
-                try:
-                    d = datetime.strptime(date_str, "%Y-%m-%d").date()
-                except (ValueError, TypeError) as e:
-                    # 172일치를 도는 배치가 행 하나 때문에 죽으면 안 된다 — 건너뛴다.
-                    logger.warning(f"[백테스트] daily_prices.date 형식이 이상해 건너뜀: {date_str!r} ({e})")
-                    continue
+            for date_val, cnt in cur.fetchall():
+                if isinstance(date_val, date):
+                    d = date_val
+                else:
+                    try:
+                        d = datetime.strptime(date_val, "%Y-%m-%d").date()
+                    except ValueError as e:
+                        # 172일치를 도는 배치가 행 하나 때문에 죽으면 안 된다 — 건너뛴다.
+                        logger.warning(f"[백테스트] daily_prices.date 형식이 이상해 건너뜀: {date_val!r} ({e})")
+                        continue
                 if d.weekday() >= 5:
                     continue
                 if cnt < MIN_ROWS_PER_DAY:

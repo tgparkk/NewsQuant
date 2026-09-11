@@ -2,27 +2,35 @@
 
 를 «재구현» 하지 않고 그 함수들이 실제로 채택한 표본을 그대로 세는지 본다.
 
-이 세 헬퍼(_ic_obs_count/_hit_rate_stats/_quantile_days_used)는 metrics.py
+이 헬퍼들(_ic_obs_count/_hit_rate_stats/_quantile_days_used)은 metrics.py
 함수의 반환값만으로는 관측치·거래일 수를 끝까지 얻을 수 없어서(daily_ic 는
 날짜→IC 값만, quantile_returns 는 버킷 집계만 돌려준다) 남겨 둔 것들이다 —
 그래서 Task 7 리뷰가 "논리 없이 테스트만 없는 건 안 된다" 며 요구한 대로
-여기서 직접 핀한다. run_news_backtest.py 자체(조립·출력)에는 별도 테스트를
-두지 않는다(Task 7 브리프가 그렇게 지시했다) — 이 파일은 «그 조립이 쓰는
-계산 헬퍼» 만 다룬다.
+여기서 직접 핀한다.
+
+_cross_section_stats/_hit_rate_wide_days_only 는 최종 전체브랜치 리뷰 C1
+(표본 크기가 안 보이는 문제)의 수정이다 — 이 둘도 «조립·출력» 이 아니라
+계산 로직이라 여기서 다룬다. run_news_backtest.py 의 나머지(조립·출력)에는
+별도 테스트를 두지 않는다(Task 7 브리프가 그렇게 지시했다).
 """
 from datetime import date
 
 import pandas as pd
+import pytest
 
 from news_scraper.backtest.metrics import daily_ic
 from scripts.run_news_backtest import (
+    _cross_section_stats,
     _hit_rate_stats,
+    _hit_rate_wide_days_only,
     _ic_obs_count,
+    _load_signals,
     _quantile_days_used,
 )
 
 DAY1 = date(2026, 6, 1)
 DAY2 = date(2026, 6, 2)
+DAY3 = date(2026, 6, 3)
 
 
 def _rows(day, pairs):
@@ -116,3 +124,87 @@ def test_quantile_days_used는_NaN_행을_고유값_판정_전에_제외한다()
     days = _quantile_days_used(df, "composite_score", "excess_h1", n_q=5)
 
     assert days == 0
+
+
+def test_cross_section_stats는_일별_유효_종목수의_분포를_낸다():
+    """day1=2종목, day2=4종목, day3=6종목 — 유효행(점수·수익 다 있음) 기준
+    median/25백분위/75백분위가 pandas 선형보간과 일치하는지 손으로 고정한다."""
+    df = pd.DataFrame(
+        _rows(DAY1, [(0.1, 0.01), (0.2, 0.02)])
+        + _rows(DAY2, [(0.1, 0.01), (0.2, 0.02), (0.3, 0.03), (0.4, 0.04)])
+        + _rows(DAY3, [(0.1, 0.01), (0.2, 0.02), (0.3, 0.03),
+                       (0.4, 0.04), (0.5, 0.05), (0.6, 0.06)])
+    )
+
+    stats = _cross_section_stats(df, "excess_h1")
+
+    assert stats["n_days"] == 3
+    assert stats["median"] == 4.0   # [2,4,6] 의 중앙값
+    assert stats["p25"] == 3.0
+    assert stats["p75"] == 5.0
+
+
+def test_cross_section_stats는_NaN_행을_세지_않는다():
+    """점수는 있지만 수익이 NaN인 행은 «유효 종목 수»에서 빼야 한다 — 안
+    그러면 4~5종목짜리 창이 실제보다 넓어 보인다(C1 이 지키려는 것)."""
+    rows = _rows(DAY1, [(0.1, 0.01), (0.2, 0.02)])
+    rows.append({"trade_date": DAY1, "composite_score": 0.9, "excess_h1": None})
+    df = pd.DataFrame(rows)
+
+    stats = _cross_section_stats(df, "excess_h1")
+
+    assert stats["median"] == 2.0   # NaN 행(3번째)은 세지 않는다
+
+
+def test_cross_section_stats는_유효행이_없으면_None이다():
+    df = pd.DataFrame(_rows(DAY1, [(0.1, None)]))
+
+    assert _cross_section_stats(df, "excess_h1") is None
+
+
+def test_히트율_wide_days_only는_횡단면이_top_n_초과하는_날만_쓴다():
+    """day1 은 5종목(top_n=2 초과, «넓은» 날)이라 포함되고, day2 는 2종목뿐
+    (top_n=2 초과 아님, «좁은» 날)이라 완전히 빠져야 한다 — 안 그러면
+    day2 에서 top2 를 뽑는 것이 «그 날 전체» 를 뽑는 것과 같아져
+    (C1) 히트율이 신호와 무관하게 0.5 로 쏠린다."""
+    df = pd.DataFrame(
+        _rows(DAY1, [(0.9, 0.01), (0.7, -0.01), (0.5, 0.02),
+                     (0.3, -0.02), (0.1, 0.03)])
+        + _rows(DAY2, [(0.6, 0.01), (0.5, -0.02)])
+    )
+
+    hr, hr_n, hr_days = _hit_rate_wide_days_only(df, "excess_h1", top_n=2)
+
+    # day1 top2 = (0.9, +0.01), (0.7, -0.01) => 2건 중 1건 양수 => 0.5
+    assert hr == pytest.approx(0.5)
+    assert hr_n == 2
+    assert hr_days == 1
+
+
+def test_히트율_wide_days_only는_넓은_날이_하나도_없으면_NaN이다():
+    """모든 거래일의 횡단면이 top_n 이하면(예: prod_calendar 처럼 하루
+    4~5종목뿐인 창) 히트율을 «측정 불가» 로 돌려줘야 한다 — 억지로 계산해
+    0.5 근방의 그럴듯한 숫자를 내면 안 된다."""
+    df = pd.DataFrame(
+        _rows(DAY1, [(0.9, 0.01), (0.5, -0.02), (0.1, 0.03)])
+        + _rows(DAY2, [(0.6, 0.01), (0.5, -0.02)])
+    )
+
+    hr, hr_n, hr_days = _hit_rate_wide_days_only(df, "excess_h1", top_n=10)
+
+    assert pd.isna(hr)
+    assert hr_n == 0
+    assert hr_days == 0
+
+
+@pytest.mark.db
+def test_load_signals는_결정적_순서로_정렬해_돌려준다(db):
+    """C2: quantile_returns 의 qcut 이 동점을 «입력 순서» 로 끊으므로, 이
+    함수가 정렬 없이 반환하면 결과가 PostgreSQL 힙 순서(=삽입/재작성 순서)에
+    좌우돼 재현되지 않는다. 실제 backtest_signal(2026-06, 기존 데이터)로
+    반환 프레임이 (trade_date, window_kind, stock_code) 순서인지 직접 본다."""
+    out = _load_signals(db, date(2026, 6, 1), date(2026, 6, 30))
+
+    assert len(out) > 0
+    keys = list(zip(out["trade_date"], out["window_kind"], out["stock_code"]))
+    assert keys == sorted(keys)

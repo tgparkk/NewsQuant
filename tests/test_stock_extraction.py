@@ -268,6 +268,36 @@ def test_ETF는_사전에_없다():
     assert not etfs, f"ETF {len(etfs)}개가 남아 있다: {etfs[:5]}"
 
 
+@pytest.mark.db
+def test_대웅_셀트리온제약_등은_stock_info_코드와_같다(db):
+    """P1: '대웅'이 069620(대웅제약, «다른 회사»)으로, '셀트리온제약'이
+    068270(셀트리온, «다른 회사»)으로 잘못 적혀 있었다 — 둘 다 실거래
+    코드였기 때문에 조용히 다른 회사에 기사를 붙였다. stock_info 를
+    권위 있는 소스로 보고 직접 대조한다."""
+    from news_scraper.base_crawler import STOCK_NAME_TO_CODE_BASE
+
+    names = ["대웅", "대웅제약", "셀트리온", "셀트리온제약"]
+    conn = db.get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT stock_name, stock_code FROM stock_info WHERE stock_name = ANY(%s)",
+                (names,),
+            )
+            official = dict(cur.fetchall())
+    finally:
+        conn.rollback()
+        db._put_connection(conn)
+
+    assert official, "stock_info 조회 결과가 비었다 — 종목명 표기가 바뀌었을 수 있다"
+    mismatches = {
+        n: {"사전": STOCK_NAME_TO_CODE_BASE.get(n), "stock_info": official[n]}
+        for n in names
+        if n in official and STOCK_NAME_TO_CODE_BASE.get(n) != official[n]
+    }
+    assert not mismatches, f"stock_info 와 불일치: {mismatches}"
+
+
 # --------------------------------------------------------------------------
 # 정밀도를 높이면서 놓치면 안 되는 것들
 # --------------------------------------------------------------------------

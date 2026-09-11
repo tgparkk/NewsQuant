@@ -160,6 +160,37 @@ def test_분위수는_거래일별로_계산된다():
     assert got[1] == pytest.approx(0.03)
 
 
+def test_분위수는_동점_비율의_중앙값을_attrs에_담는다():
+    """C2: 동점 블록이 크면 qcut 버킷 경계가(rank(method="first")가 입력
+    순서로 끊는 지점) 재현 불가능해진다 — 그 정도를 attrs["tie_fraction_median"]
+    로 드러내는지 손으로 계산해 고정한다."""
+    dayA, dayB = date(2026, 6, 15), date(2026, 6, 16)
+    rows = []
+    for i, (s, r) in enumerate([(1, 0.01), (1, 0.02), (1, 0.03), (2, 0.04)]):
+        rows.append({"trade_date": dayA, "window_kind": "sector_1530",
+                     "stock_code": f"A{i}", "composite_score": s, "excess_h1": r})
+    for i, (s, r) in enumerate([(1, 0.01), (2, 0.02), (3, 0.03), (4, 0.04)]):
+        rows.append({"trade_date": dayB, "window_kind": "sector_1530",
+                     "stock_code": f"B{i}", "composite_score": s, "excess_h1": r})
+    df = pd.DataFrame(rows)
+
+    q = quantile_returns(df, "excess_h1", n_q=2)
+
+    # dayA: 값 1 이 4행 중 3행 => 0.75. dayB: 전부 유니크(1/4씩) => 0.25.
+    # 중앙값([0.75, 0.25]) = 0.5.
+    assert q.attrs["tie_fraction_median"] == pytest.approx(0.5)
+
+
+def test_분위수가_비어있으면_동점_비율도_NaN이다():
+    df = pd.DataFrame(columns=["trade_date", "window_kind", "stock_code",
+                               "composite_score", "excess_h1"])
+
+    q = quantile_returns(df, "excess_h1", n_q=5)
+
+    assert q.empty
+    assert np.isnan(q.attrs["tie_fraction_median"])
+
+
 def test_히트율은_상위_N의_양의_비율이다():
     df = _frame([(0.9, 0.01), (0.7, -0.01), (0.3, -0.02), (0.1, -0.03)])
 

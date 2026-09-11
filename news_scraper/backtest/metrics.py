@@ -66,26 +66,47 @@ def quantile_returns(df: pd.DataFrame, ret_col: str = "excess_h1",
     groupby().apply() 로 한 번에 처리하면 «거래일이 딱 하나뿐인» 입력에서
     pandas(2.2 계열 확인됨)가 결과를 행별로 정렬하지 않고 통째로 뒤집어
     반환하는 버그가 있어, n_q 분위 라벨이 종목에 잘못 붙는다.
+
+    반환 프레임의 .attrs["tie_fraction_median"] 에 «날짜별 최다 동점 비율»의
+    중앙값을 같이 담아 돌려준다(C2) — 실 데이터는 하루 176종목에 distinct
+    점수가 36개뿐이고 그중 39%가 같은 값(0.0647)인 날이 있을 정도로 동점이
+    크다. qcut 이 그 동점 블록 «안»에서 경계를 끊으면 Q2~Q4 평균과 Q5-Q1
+    스프레드가 동점 처리 방식에 좌우된다 — 이 값이 크면 스프레드를 신호로
+    읽으면 안 된다.
     """
+    empty_cols = ["quantile", "mean_excess", "n"]
     work = df.dropna(subset=[score_col, ret_col]).copy()
     if work.empty:
-        return pd.DataFrame(columns=["quantile", "mean_excess", "n"])
+        empty = pd.DataFrame(columns=empty_cols)
+        empty.attrs["tie_fraction_median"] = float("nan")
+        return empty
 
     labels = []
+    tie_fractions = []
     for _, g in work.groupby("trade_date"):
         if g[score_col].nunique() < n_q:
             continue
+        # rank(method="first")는 동점을 «이 g 가 받은 행 순서» 대로 끊어서
+        # 순위를 매긴다 — 즉 qcut 버킷 경계가 동점 블록 안 어디서 잘리는지는
+        # 호출자가 넘긴 프레임의 행 순서에 달려 있다. 이 함수는 순서를 스스로
+        # 정하지 않으므로, 결과가 재현되려면 호출자(_load_signals 등)가 이미
+        # 결정적인 순서(예: ORDER BY)로 정렬해 넘겨야 한다(C2).
         labels.append(pd.qcut(g[score_col].rank(method="first"), n_q, labels=False))
+        tie_fractions.append(float(g[score_col].value_counts(normalize=True).iloc[0]))
 
     if not labels:
-        return pd.DataFrame(columns=["quantile", "mean_excess", "n"])
+        empty = pd.DataFrame(columns=empty_cols)
+        empty.attrs["tie_fraction_median"] = float("nan")
+        return empty
 
     work["quantile"] = pd.concat(labels)
     work = work.dropna(subset=["quantile"])
     agg = (work.groupby("quantile")[ret_col]
                .agg(mean_excess="mean", n="size").reset_index())
     agg["quantile"] = agg["quantile"].astype(int)
-    return agg.sort_values("quantile").reset_index(drop=True)
+    agg = agg.sort_values("quantile").reset_index(drop=True)
+    agg.attrs["tie_fraction_median"] = float(pd.Series(tie_fractions, dtype=float).median())
+    return agg
 
 
 def hit_rate(df: pd.DataFrame, ret_col: str = "excess_h1", top_n: int = 10,
