@@ -290,7 +290,12 @@ def test_DART_content_기업명으로_코드를_복원한다(db):
 
 
 def test_DART_title_괄호로_코드를_복원한다(db):
-    """DART 행의 title 이 '[효성 ITX] ...' 이면 094280 을 복원한다 (공백 정규화)."""
+    """DART 행의 title 이 '[효성 ITX] ...' 이면 094280 을 복원한다 (공백 정규화).
+
+    title branch 와 공백 정규화를 테스트하려면 기업명이 title 에만 있어야 한다.
+    content 에 기업명 line 이 없으므로 content branch 는 실패하고,
+    title 의 [효성 ITX] 에서 공백을 제거해 stock_info 와 매칭한다.
+    """
     ensure_table(db)
     conn = db.get_connection()
 
@@ -302,12 +307,12 @@ def test_DART_title_괄호로_코드를_복원한다(db):
             cur.execute("DELETE FROM news_reprocessed WHERE news_id = %s", (sid,))
             cur.execute("DELETE FROM news WHERE news_id = %s", (sid,))
 
-            # DART 행 — title 에 [회사명 공백]
+            # DART 행 — title 에만 [회사명 공백], content 에는 기업명 없음
             cur.execute("""
                 INSERT INTO news (news_id, title, content, published_at, source,
                                   category, url, related_stocks, sentiment_score)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (sid, "[효성 ITX] 공시 공지", "기업명: 효성ITX\n공시제목: 임원\n접수번호: 456\n시장: 코스피",
+            """, (sid, "[효성 ITX] 공시 공지", "공시제목: 임원변동\n접수번호: 456\n시장: 코스피\n금액: 1000억",
                   datetime(2026, 6, 15, 10, 0), "dart", "공시",
                   "https://example.invalid/dart2", "", 0))
 
