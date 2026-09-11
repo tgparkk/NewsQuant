@@ -29,8 +29,11 @@ class DARTCrawler(BaseCrawler):
             logger.error("[dart] API 키가 설정되지 않았습니다.")
             return []
 
-        # 오늘 날짜 (YYYYMMDD)
-        today = datetime.now().strftime("%Y%m%d")
+        # 사이클 시작 시각을 한 번만 찍어 모든 공시가 공유한다.
+        # 건마다 datetime.now() 를 부르면 DART 가 «최신순»으로 주기 때문에
+        # 가장 새 공시가 가장 이른 시각을 받아 순서가 뒤집힌다.
+        collected_at = datetime.now()
+        today = collected_at.strftime("%Y%m%d")
         news_list = []
         
         for page in range(1, max_pages + 1):
@@ -109,7 +112,7 @@ class DARTCrawler(BaseCrawler):
                         'url': url,
                         'source': self.source_name,
                         'category': '공시',
-                        'published_at': self.parse_datetime(item.get('rcept_dt', today)),
+                        'published_at': self.parse_datetime(item.get('rcept_dt', today), now=collected_at),
                         'related_stocks': related_stocks
                     }
                     news_list.append(news_item)
@@ -132,11 +135,45 @@ class DARTCrawler(BaseCrawler):
         """
         return None
 
-    def parse_datetime(self, date_str: str) -> str:
-        """YYYYMMDD 형식을 ISO 형식으로 변환"""
+    def parse_datetime(self, date_str: str, now: Optional[datetime] = None) -> str:
+        """공시 접수 시각을 정한다.
+
+        Open DART list.json 은 «시각을 주지 않는다». 2026-09-12 실측 기준
+        응답 필드는 corp_cls·corp_code·corp_name·flr_nm·rcept_dt·rcept_no·
+        report_nm·rm·stock_code 뿐이고, rcept_dt 는 YYYYMMDD 다.
+
+        그래서 예전에는 strptime("%Y%m%d") 결과를 그대로 써서 모든 공시가
+        자정으로 저장됐다 — DB 기준 149,996건 100%. 그 탓에 장 마감 뒤에
+        나온 공시가 섹터 집계 창([직전 평일 15:30, now]) 의 시작보다 앞서서
+        통째로 빠졌다. 15:30 이후 접수분이 40.5%(60,709건) 이고, 실적·유상증자·
+        공급계약처럼 가장 크게 움직이는 재료가 거기 몰려 있다.
+
+        크롤러는 오늘자만 요청하므로(bgn_de=end_de=today) 목록에 처음 뜬
+        공시는 «방금» 접수된 것이다. 그래서 수집 시각을 쓴다. DART 공시검색
+        화면과 대조한 실측 오차는 약 1분이다(18:42 공시를 18:43:06 에 수집).
+        정확한 접수 시각은 공시검색 HTML 에만 있는데, 하루 653건이 시장별
+        5개 탭에 100건씩 쪼개져 있어 사이클마다 7회 넘는 추가 요청이 필요하다.
+        1분을 줄이자고 API 크롤러에 페이징 스크레이핑을 붙일 이유가 없다.
+
+        수집 시각은 "우리가 이 정보를 쓸 수 있게 된 시점"이라 백테스트에서
+        미래를 참조하지 않는다는 점도 접수 시각보다 낫다.
+        """
+        now = now or datetime.now()
+
         try:
-            dt = datetime.strptime(date_str, "%Y%m%d")
-            return dt.isoformat()
-        except:
-            return datetime.now().isoformat()
+            filed_date = datetime.strptime(date_str, "%Y%m%d").date()
+        except (ValueError, TypeError):
+            logger.warning(f"[dart] 접수일 형식이 예상과 다르다: {date_str!r} — 수집 시각을 쓴다")
+            return now.isoformat()
+
+        if filed_date != now.date():
+            # 자정 전후에 어제자 공시가 딸려 오는 경우. 날짜 범위를 넓히도록
+            # crawl_news_list 를 고쳤다면 여기가 매 건 울린다 — 그때는 접수
+            # 시각을 따로 구해 와야 한다.
+            logger.warning(
+                f"[dart] 접수일({date_str}) 이 오늘({now:%Y%m%d}) 이 아니다 — "
+                f"시각을 알 수 없어 수집 시각을 쓴다"
+            )
+
+        return now.isoformat()
 
