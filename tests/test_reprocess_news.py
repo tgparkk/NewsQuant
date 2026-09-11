@@ -119,3 +119,121 @@ def test_원본_news_를_건드리지_않는다(db, sentinel_row):
     finally:
         conn.rollback()
         db._put_connection(conn)
+
+
+def test_category_별로_importance_가_다르다(db):
+    """카테고리별로 importance_score 가 달라야 한다."""
+    ensure_table(db)
+    conn = db.get_connection()
+
+    s1 = "test-importance-공시"
+    s2 = "test-importance-산업"
+
+    try:
+        with conn.cursor() as cur:
+            # 청소
+            cur.execute("DELETE FROM news_reprocessed WHERE news_id IN (%s, %s)", (s1, s2))
+            cur.execute("DELETE FROM news WHERE news_id IN (%s, %s)", (s1, s2))
+
+            # 공시 카테고리
+            cur.execute("""
+                INSERT INTO news (news_id, title, content, published_at, source,
+                                  category, url, related_stocks, sentiment_score)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (s1, "삼성 공시", "삼성전자가 공시했다",
+                  datetime(2026, 6, 15, 10, 0), "test", "공시",
+                  "https://example.invalid/1", "", 0))
+
+            # 산업 카테고리
+            cur.execute("""
+                INSERT INTO news (news_id, title, content, published_at, source,
+                                  category, url, related_stocks, sentiment_score)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (s2, "산업 뉴스", "산업 뉴스가 나왔다",
+                  datetime(2026, 6, 15, 10, 0), "test", "산업",
+                  "https://example.invalid/2", "", 0))
+
+        conn.commit()
+    finally:
+        db._put_connection(conn)
+
+    reprocess(db, apply=True, only_news_id=s1)
+    reprocess(db, apply=True, only_news_id=s2)
+
+    conn = db.get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT importance_score FROM news_reprocessed WHERE news_id = %s",
+                        (s1,))
+            imp1 = cur.fetchone()[0]
+            cur.execute("SELECT importance_score FROM news_reprocessed WHERE news_id = %s",
+                        (s2,))
+            imp2 = cur.fetchone()[0]
+            assert imp1 != imp2, f"Importance scores should differ: {imp1} vs {imp2}"
+    finally:
+        conn.rollback()
+        db._put_connection(conn)
+
+    # 청소
+    conn = db.get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM news_reprocessed WHERE news_id IN (%s, %s)", (s1, s2))
+            cur.execute("DELETE FROM news WHERE news_id IN (%s, %s)", (s1, s2))
+        conn.commit()
+    finally:
+        db._put_connection(conn)
+
+
+def test_다중_종목_mention_은_impact_를_높인다(db):
+    """여러 종목을 언급하는 기사는 impact_score > 0 이다."""
+    ensure_table(db)
+    conn = db.get_connection()
+
+    sid = "test-impact-multi"
+
+    try:
+        with conn.cursor() as cur:
+            # 청소
+            cur.execute("DELETE FROM news_reprocessed WHERE news_id = %s", (sid,))
+            cur.execute("DELETE FROM news WHERE news_id = %s", (sid,))
+
+            # 여러 종목 언급
+            cur.execute("""
+                INSERT INTO news (news_id, title, content, published_at, source,
+                                  category, url, related_stocks, sentiment_score)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (sid, "삼성과 SK, LG 동반 강세",
+                  "삼성전자와 SK하이닉스, LG전자가 동반 상승했다",
+                  datetime(2026, 6, 15, 10, 0), "test", "산업",
+                  "https://example.invalid/multi", "", 0))
+
+        conn.commit()
+    finally:
+        db._put_connection(conn)
+
+    reprocess(db, apply=True, only_news_id=sid)
+
+    conn = db.get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT impact_score, related_stocks FROM news_reprocessed WHERE news_id = %s",
+                        (sid,))
+            impact, stocks = cur.fetchone()
+            assert impact > 0, f"Impact score should be > 0 for multi-stock mention: {impact}"
+            # 여러 종목이 추출되었는지 확인
+            stock_list = stocks.split(",") if stocks else []
+            assert len(stock_list) > 1, f"Should extract multiple stocks: {stock_list}"
+    finally:
+        conn.rollback()
+        db._put_connection(conn)
+
+    # 청소
+    conn = db.get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM news_reprocessed WHERE news_id = %s", (sid,))
+            cur.execute("DELETE FROM news WHERE news_id = %s", (sid,))
+        conn.commit()
+    finally:
+        db._put_connection(conn)
