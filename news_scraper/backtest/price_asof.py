@@ -70,7 +70,11 @@ class DailyPriceAsOf:
                 """, (codes, self.as_of_date, LOOKBACK_ROWS))
                 return cur.fetchall()
         finally:
-            conn.rollback()
+            # 풀 반환은 rollback 실패로도 생략되면 안 된다 (백테스트는 이 경로를 수백 번 탄다).
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             self.db._put_connection(conn)
 
     @staticmethod
