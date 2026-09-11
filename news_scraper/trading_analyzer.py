@@ -120,6 +120,11 @@ class TradingAnalyzer:
             
             stock_stats.append({
                 'stock_code': stock_code,
+                'side': None,   # 후보 판정 후 'buy'/'sell'/'watch' 로 채운다 (후보 아니면 None)
+                # 근거 news_id — 나중에 신호를 감사하려면 무엇을 보고 그랬는지가 필요하다
+                'evidence_news_ids': [
+                    n.get('news_id') for n in data['news_list'] if n.get('news_id')
+                ],
                 'news_count': news_count,
                 'avg_sentiment': avg_sentiment,
                 'adjusted_sentiment': adjusted_sentiment,
@@ -170,7 +175,14 @@ class TradingAnalyzer:
             and s['positive_count'] > 0 and s['negative_count'] > 0
         ]
         watch_candidates.sort(key=lambda x: x['news_count'], reverse=True)
-        
+
+        # 후보군 소속을 stock_stats 항목에 side 로 표시한다 (원장이 그대로 적재한다).
+        # 세 후보군의 감성 조건은 서로 겹치지 않으므로 한 종목이 두 번 칠해지지 않는다.
+        for side, candidates in (('buy', buy_candidates), ('sell', sell_candidates),
+                                 ('watch', watch_candidates)):
+            for s in candidates:
+                s['side'] = side
+
         return {
             'total_news': len(today_news),
             'stocks_mentioned': len(stock_stats),

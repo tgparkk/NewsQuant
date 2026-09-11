@@ -153,6 +153,12 @@ class NewsDatabase:
                 self.init_sector_news_tables()
             except Exception as e:
                 logger.error(f"[섹터뉴스] 표 초기화 실패(수집은 계속): {e}")
+
+            # 신호 원장 표 (실패해도 뉴스 수집은 계속 — 스냅샷 잡이 나중에 다시 보고한다)
+            try:
+                self.init_signal_ledger_table()
+            except Exception as e:
+                logger.error(f"[신호원장] 표 초기화 실패(수집은 계속): {e}")
         except Exception as e:
             conn.rollback()
             logger.error(f"데이터베이스 초기화 오류: {e}")
@@ -716,6 +722,135 @@ class NewsDatabase:
                 """, (trade_date,))
                 cols = [d[0] for d in cur.description]
                 return [{c: self._jsonable(v) for c, v in zip(cols, row)} for row in cur.fetchall()]
+        finally:
+            conn.rollback()
+            self._put_connection(conn)
+
+    # ------------------------------------------------------------------
+    # 신호 원장 (signal ledger, 2026-09-11) — append-only 전향 기록
+    # ------------------------------------------------------------------
+    # 「어제 시스템이 뭐라고 했는지」를 남기는 표다. 후보뿐 아니라 뉴스가 붙은
+    # 모든 종목의 집계값을 스냅샷마다 쌓는다 — 임계값을 바꿔 재평가하려면
+    # 후보 밖의 종목도 필요하다. UPDATE/DELETE 경로는 «만들지 않는다».
+    # 같은 (as_of, stock_code) 재실행은 ON CONFLICT DO NOTHING 으로 흘린다.
+    SIGNAL_LEDGER_DDL = (
+        """
+        CREATE TABLE IF NOT EXISTS newsquant_signal_ledger (
+            id                 bigserial PRIMARY KEY,
+            as_of              timestamp NOT NULL,
+            signal_date        date      NOT NULL,
+            stock_code         text      NOT NULL,
+            side               text,
+            news_count         integer   NOT NULL,
+            avg_sentiment      double precision,
+            avg_overall        double precision,
+            adjusted_sentiment double precision,
+            volume_signal      double precision,
+            composite_score    double precision,
+            positive_count     integer,
+            negative_count     integer,
+            neutral_count      integer,
+            positive_ratio     double precision,
+            evidence_news_ids  jsonb,
+            created_at         timestamp NOT NULL DEFAULT now(),
+            UNIQUE (as_of, stock_code)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_nsl_date_code ON newsquant_signal_ledger (signal_date, stock_code)",
+        "CREATE INDEX IF NOT EXISTS idx_nsl_as_of ON newsquant_signal_ledger (as_of)",
+        "CREATE INDEX IF NOT EXISTS idx_nsl_side ON newsquant_signal_ledger (side) WHERE side IS NOT NULL",
+    )
+
+    SIGNAL_LEDGER_COLUMNS = (
+        "as_of", "signal_date", "stock_code", "side", "news_count",
+        "avg_sentiment", "avg_overall", "adjusted_sentiment", "volume_signal",
+        "composite_score", "positive_count", "negative_count", "neutral_count",
+        "positive_ratio", "evidence_news_ids",
+    )
+
+    def init_signal_ledger_table(self) -> None:
+        """DDL(멱등). 표 이름에 newsquant_ 접두사를 붙여 소유를 분명히 한다
+        (이 DB 는 RoboTrader 와 공유하며 candidate_stocks 등은 robotrader 소유다)."""
+        conn = self.get_connection()
+        try:
+            with conn.cursor() as cur:
+                for sql in self.SIGNAL_LEDGER_DDL:
+                    cur.execute(sql)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._put_connection(conn)
+
+    def insert_signal_ledger(self, rows: List[Dict]) -> int:
+        """신호 원장 배치 적재 (append-only). 중복 (as_of, stock_code) 는 무시한다.
+
+        Returns:
+            실제로 적재된 행 수 (중복으로 흘린 행은 세지 않는다)
+        """
+        if not rows:
+            return 0
+
+        conn = self.get_connection()
+        try:
+            values = [
+                (
+                    r["as_of"], r["signal_date"], r["stock_code"], r.get("side"),
+                    r.get("news_count", 0),
+                    r.get("avg_sentiment"), r.get("avg_overall"),
+                    r.get("adjusted_sentiment"), r.get("volume_signal"),
+                    r.get("composite_score"),
+                    r.get("positive_count"), r.get("negative_count"), r.get("neutral_count"),
+                    r.get("positive_ratio"),
+                    json.dumps(r.get("evidence_news_ids") or [], ensure_ascii=False),
+                )
+                for r in rows
+            ]
+            with conn.cursor() as cur:
+                inserted = extras.execute_values(
+                    cur,
+                    f"""
+                    INSERT INTO newsquant_signal_ledger
+                        ({", ".join(self.SIGNAL_LEDGER_COLUMNS)})
+                    VALUES %s
+                    ON CONFLICT (as_of, stock_code) DO NOTHING
+                    RETURNING id
+                    """,
+                    values,
+                    template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
+                    page_size=500,
+                    fetch=True,
+                )
+            conn.commit()
+            return len(inserted)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._put_connection(conn)
+
+    def get_signal_ledger(self, signal_date=None, as_of=None,
+                          stock_code: Optional[str] = None) -> List[Dict]:
+        """원장 조회(읽기 전용). 인자를 준 조건만 걸린다. as_of, stock_code 순."""
+        conn = self.get_connection()
+        try:
+            query = f"SELECT id, {', '.join(self.SIGNAL_LEDGER_COLUMNS)}, created_at FROM newsquant_signal_ledger WHERE TRUE"
+            params: List = []
+            if signal_date is not None:
+                query += " AND signal_date = %s"
+                params.append(signal_date)
+            if as_of is not None:
+                query += " AND as_of = %s"
+                params.append(as_of)
+            if stock_code is not None:
+                query += " AND stock_code = %s"
+                params.append(stock_code)
+            query += " ORDER BY as_of, stock_code"
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
         finally:
             conn.rollback()
             self._put_connection(conn)

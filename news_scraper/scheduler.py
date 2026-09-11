@@ -4,10 +4,13 @@
 """
 
 import logging
+import time as _time
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from datetime import datetime, time as dt_time, timedelta
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.triggers.combining import OrTrigger
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 import pytz
 
@@ -59,6 +62,9 @@ class NewsScheduler:
         # 마지막 수집 시간 추적
         self.last_collection_time = None
         self.collection_interval = 1  # 기본 1분
+
+        # 신호 원장 스냅샷용 분석기 (첫 스냅샷에서 지연 생성)
+        self._trading_analyzer = None
     
     def is_market_open(self) -> bool:
         """
@@ -407,6 +413,21 @@ class NewsScheduler:
         )
         logger.info("- 섹터 뉴스 집계: 10분마다 (평일 09:05~15:30 동결)")
 
+        # 신호 원장 스냅샷 — 평일 정해진 시각에 종목별 집계를 append-only 로 적재.
+        # 잡 하나(OrTrigger)로 묶어 max_instances=1 이 스냅샷 간 겹침까지 막게 한다.
+        self.scheduler.add_job(
+            func=self.run_signal_ledger_snapshot,
+            trigger=OrTrigger([
+                CronTrigger(day_of_week='mon-fri', hour=h, minute=m)
+                for h, m in self.SIGNAL_LEDGER_TIMES
+            ]),
+            id='signal_ledger_snapshot',
+            max_instances=1,
+            misfire_grace_time=300
+        )
+        times_txt = ', '.join(f"{h:02d}:{m:02d}" for h, m in self.SIGNAL_LEDGER_TIMES)
+        logger.info(f"- 신호 원장 스냅샷: 평일 {times_txt}")
+
         logger.info("스케줄 설정 완료")
         logger.info("- 시장 운영 시간 (월~금 09:00~15:30): 1분마다")
         logger.info("- 시장 마감 후 (월~금 15:30~24:00, 00:00~09:00): 5분마다")
@@ -441,6 +462,83 @@ class NewsScheduler:
         """섹터 뉴스 점수 집계 1회 (스펙 B). 예외는 잡 안에서 처리된다."""
         from .sector_news_job import run_sector_news_job
         return run_sector_news_job(self.db)
+
+    # ─── 신호 원장 스냅샷 ─────────────────────────────────────
+
+    # 스냅샷 시각 (KST, 평일). 15:40 이 장 마감 직후 「결정 시각」이다.
+    SIGNAL_LEDGER_TIMES = ((9, 5), (10, 0), (14, 0), (15, 20), (15, 40))
+
+    @staticmethod
+    def _to_ledger_row(stat: Dict, as_of: datetime, signal_date) -> Dict:
+        """analyze_today_stocks() 의 stock_stats 항목 1건 → 원장 행 1건."""
+        return {
+            'as_of': as_of,
+            'signal_date': signal_date,
+            'stock_code': stat.get('stock_code'),
+            'side': stat.get('side'),
+            'news_count': stat.get('news_count', 0),
+            'avg_sentiment': stat.get('avg_sentiment'),
+            'avg_overall': stat.get('avg_overall'),
+            'adjusted_sentiment': stat.get('adjusted_sentiment'),
+            'volume_signal': stat.get('volume_signal'),
+            'composite_score': stat.get('composite_score'),
+            'positive_count': stat.get('positive_count'),
+            'negative_count': stat.get('negative_count'),
+            'neutral_count': stat.get('neutral_count'),
+            'positive_ratio': stat.get('positive_ratio'),
+            'evidence_news_ids': stat.get('evidence_news_ids') or [],
+        }
+
+    def run_signal_ledger_snapshot(self) -> Dict:
+        """신호 원장 스냅샷 1회. 종목별 집계를 append-only 로 적재한다.
+
+        예외는 여기서 삼킨다 (스케줄러를 죽이지 않는다 — 섹터 뉴스 잡 관례).
+        항상 summary dict 를 돌려준다.
+        """
+        t0 = _time.monotonic()
+        as_of = datetime.now(pytz.timezone('Asia/Seoul')).replace(tzinfo=None, microsecond=0)
+        summary: Dict = {'ok': False, 'as_of': as_of.isoformat()}
+        try:
+            if self._trading_analyzer is None:
+                from .trading_analyzer import TradingAnalyzer
+                self._trading_analyzer = TradingAnalyzer()
+
+            result = self._trading_analyzer.analyze_today_stocks()
+            stats = result.get('stock_stats') or []
+
+            signal_date = as_of.date()
+            try:
+                analysis_date = result.get('analysis_date')
+                if analysis_date:
+                    signal_date = datetime.strptime(analysis_date, '%Y-%m-%d').date()
+            except (TypeError, ValueError):
+                pass
+
+            rows = [self._to_ledger_row(s, as_of, signal_date) for s in stats]
+            inserted = self.db.insert_signal_ledger(rows)
+
+            n_buy = len(result.get('buy_candidates') or [])
+            n_sell = len(result.get('sell_candidates') or [])
+            n_watch = len(result.get('watch_candidates') or [])
+            ms = int((_time.monotonic() - t0) * 1000)
+            summary.update({
+                'ok': True, 'signal_date': signal_date.isoformat(),
+                'stocks': len(stats), 'buy': n_buy, 'sell': n_sell, 'watch': n_watch,
+                'inserted': inserted, 'ms': ms,
+            })
+            logger.info(
+                f"[신호원장] as_of={as_of:%H:%M} 종목 {len(stats)} · "
+                f"매수 {n_buy} · 매도 {n_sell} · 관찰 {n_watch} · "
+                f"적재 {inserted} · {ms}ms"
+            )
+            if rows and inserted < len(rows):
+                logger.warning(f"[신호원장] 중복으로 흘린 행 {len(rows) - inserted}건 "
+                               f"(같은 as_of 재실행)")
+            return summary
+        except Exception as e:
+            logger.error(f"[신호원장] 스냅샷 실패: {e}", exc_info=True)
+            summary['error'] = f"{type(e).__name__}: {e}"
+            return summary
 
     def stop(self):
         """스케줄러 중지"""
