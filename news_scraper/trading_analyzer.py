@@ -16,19 +16,33 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# _load_volume_cache 가 FROM 에 꽂는 값은 이 목록에 있는 것만 허용한다.
+# SQL 에 그대로 이어붙이므로 임의 문자열이 들어오면 절대 안 된다.
+_VOLUME_TABLES = ("news", "news_reprocessed")
+
 
 class TradingAnalyzer:
     """매매 판단 분석기"""
-    
-    def __init__(self, db_path: str = "news_data.db", price_fetcher=None):
+
+    def __init__(self, db_path: str = "news_data.db", price_fetcher=None,
+                 volume_table: str = "news"):
         """
         Args:
             db_path: 데이터베이스 파일 경로
             price_fetcher: 주가 조회기. 백테스트는 DailyPriceAsOf 를 넣어
                 «과거 시점» 으로 돌린다. 생략하면 생산용 PriceFetcher.
+            volume_table: 뉴스 볼륨 기준선을 셀 표. 생산은 반드시 "news" —
+                기본값을 바꾸면 안 된다. 백테스트는 신호의 news_count 와
+                같은 재추출기를 쓴 "news_reprocessed" 를 넘겨서, 분자(오늘
+                카운트)와 분모(기준선)가 같은 코드에서 나오게 한다.
         """
+        if volume_table not in _VOLUME_TABLES:
+            raise ValueError(
+                f"알 수 없는 볼륨 기준선 표: {volume_table!r} — {_VOLUME_TABLES} 중 하나여야 한다"
+            )
         self.db = NewsDatabase(db_path)
         self.price_fetcher = price_fetcher or PriceFetcher()
+        self.volume_table = volume_table
         # 클래스 속성이면 인스턴스 사이로 새 나간다. 거래일마다 분석기를
         # 새로 만드는 백테스트에서는 첫날 캐시가 내내 재사용된다.
         self._volume_cache: Dict = {}
@@ -430,8 +444,11 @@ class TradingAnalyzer:
     def _load_volume_cache(self, as_of: Optional[datetime] = None):
         """전 종목의 일별 뉴스 수를 한 번에 로드 (LIKE 반복 대신 한 번 풀스캔).
 
-        as_of 를 주면 그 시점 «이전» 뉴스만 센다. 주지 않으면 예전처럼
+        as_of 를 주면 그 시점까지(포함) 뉴스만 센다. 주지 않으면 예전처럼
         전체를 읽고 최근 날짜 1개를 버린다(생산 경로).
+        경계를 <= 로 둔다 — _news_in_window 의 (start, as_of] 규칙과 맞춘다.
+        안 그러면 정각(예: 09:00:00)에 찍힌 기사가 오늘 카운트(분자)에는
+        들어가고 기준선(분모)에는 빠지는 어긋남이 생긴다.
 
         캐시는 그것을 만들 때 쓴 as_of 로 키를 매긴다. 요청받은 as_of 가
         캐시를 만든 as_of 와 다르면 무조건 다시 읽는다 — 낡은 기준선을
@@ -441,55 +458,67 @@ class TradingAnalyzer:
             return
 
         self._volume_cache = {}
-
+        rows = []
+        conn = None
         try:
             conn = self.db.get_connection()
-            cursor = conn.cursor()
-            if as_of is None:
-                cursor.execute("""
-                    SELECT DATE(published_at) as d, related_stocks
-                    FROM news
-                    WHERE related_stocks IS NOT NULL AND related_stocks != ''
-                    ORDER BY d DESC
-                """)
-            else:
-                cursor.execute("""
-                    SELECT DATE(published_at) as d, related_stocks
-                    FROM news
-                    WHERE related_stocks IS NOT NULL AND related_stocks != ''
-                      AND published_at < %s
-                    ORDER BY d DESC
-                """, (as_of,))
-            rows = cursor.fetchall()
-            self.db._put_connection(conn)
-
-            # 종목별 날짜별 카운트 집계
-            stock_daily: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
-            for d, rs in rows:
-                d_str = str(d)  # datetime.date → 문자열 변환
-                for code in rs.split(','):
-                    code = code.strip()
-                    if len(code) == 6 and code.isdigit():
-                        stock_daily[code][d_str] += 1
-
-            # 종목별 일평균 (최근 20일)
-            # 두 경로 모두 최근 날짜 1개(생산: 오늘자, as_of: as_of 시각까지만
-            # 걸쳐 있어 하루치가 채 안 되는 토막)를 버리고, 그 앞의 완전한
-            # 20일을 평균한다 — 그래야 백테스트가 생산과 같은 시그널을 본다.
-            for code, daily in stock_daily.items():
-                dates = sorted(daily.keys(), reverse=True)
-                if len(dates) <= 1:
-                    self._volume_cache[code] = 0
+            with conn.cursor() as cursor:
+                if as_of is None:
+                    cursor.execute(f"""
+                        SELECT DATE(published_at) as d, related_stocks
+                        FROM {self.volume_table}
+                        WHERE related_stocks IS NOT NULL AND related_stocks != ''
+                        ORDER BY d DESC
+                    """)
                 else:
-                    counts = [daily[d] for d in dates[1:21]]
-                    self._volume_cache[code] = sum(counts) / len(counts) if counts else 0
-
-            self._volume_cache_loaded = True
-            self._volume_cache_as_of = as_of
+                    cursor.execute(f"""
+                        SELECT DATE(published_at) as d, related_stocks
+                        FROM {self.volume_table}
+                        WHERE related_stocks IS NOT NULL AND related_stocks != ''
+                          AND published_at <= %s
+                        ORDER BY d DESC
+                    """, (as_of,))
+                rows = cursor.fetchall()
+            conn.rollback()  # 읽기 전용이라도 풀에 트랜잭션을 남긴 채 돌려주지 않는다
         except Exception as e:
-            logger.warning(f"볼륨 캐시 로드 실패: {e}")
-            self._volume_cache_loaded = True  # 실패해도 재시도 방지
-            self._volume_cache_as_of = as_of
+            # 여기서 조용히 넘어가면 이후 volume_signal 이 모든 종목에서
+            # 말없이 0.0 으로 고정된다 — 실신호처럼 보이는 가짜다.
+            logger.warning(f"볼륨 캐시 로드 실패 — 이번 호출의 volume_signal 은 0.0 으로 고정된다: {e}")
+            rows = []
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+        finally:
+            # get_connection() 이 성공한 이상, 예외가 나도 반드시 풀에 돌려준다
+            # (그러지 않으면 백테스트처럼 이 경로를 수백 번 타는 실행이 풀을 고갈시킨다).
+            if conn is not None:
+                self.db._put_connection(conn)
+
+        # 종목별 날짜별 카운트 집계
+        stock_daily: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        for d, rs in rows:
+            d_str = str(d)  # datetime.date → 문자열 변환
+            for code in (rs or "").split(','):
+                code = code.strip()
+                if len(code) == 6 and code.isdigit():
+                    stock_daily[code][d_str] += 1
+
+        # 종목별 일평균 (최근 20일)
+        # 두 경로 모두 최근 날짜 1개(생산: 오늘자, as_of: as_of 시각까지만
+        # 걸쳐 있어 하루치가 채 안 되는 토막)를 버리고, 그 앞의 완전한
+        # 20일을 평균한다 — 그래야 백테스트가 생산과 같은 시그널을 본다.
+        for code, daily in stock_daily.items():
+            dates = sorted(daily.keys(), reverse=True)
+            if len(dates) <= 1:
+                self._volume_cache[code] = 0
+            else:
+                counts = [daily[d] for d in dates[1:21]]
+                self._volume_cache[code] = sum(counts) / len(counts) if counts else 0
+
+        self._volume_cache_loaded = True
+        self._volume_cache_as_of = as_of
 
     def _volume_signal(self, stock_code: str, today_count: int) -> float:
         """
