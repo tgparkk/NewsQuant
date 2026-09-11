@@ -9,9 +9,13 @@
 여기서 직접 핀한다.
 
 _cross_section_stats/_hit_rate_wide_days_only 는 최종 전체브랜치 리뷰 C1
-(표본 크기가 안 보이는 문제)의 수정이다 — 이 둘도 «조립·출력» 이 아니라
-계산 로직이라 여기서 다룬다. run_news_backtest.py 의 나머지(조립·출력)에는
-별도 테스트를 두지 않는다(Task 7 브리프가 그렇게 지시했다).
+(표본 크기가 안 보이는 문제)의 수정이고, _month_range/_corpus_gap_stats 는
+그 2차 재검토(코퍼스 공백 수치를 리터럴로 박아 뒀던 결함)의 수정이다 —
+이들도 «조립·출력» 이 아니라 계산/조회 로직이라 여기서 다룬다.
+run_news_backtest.py 의 나머지(조립·출력, 예: IC 줄의 ⚠ 표시나 히트율
+라벨 문자열 자체)에는 별도 테스트를 두지 않는다(Task 7 브리프가 그렇게
+지시했다) — 그 값들이 의존하는 계산(_cross_section_stats 의 median 등)은
+이미 여기서 고정돼 있다.
 """
 from datetime import date
 
@@ -25,6 +29,7 @@ from scripts.run_news_backtest import (
     _hit_rate_wide_days_only,
     _ic_obs_count,
     _load_signals,
+    _month_range,
     _quantile_days_used,
 )
 
@@ -208,3 +213,69 @@ def test_load_signals는_결정적_순서로_정렬해_돌려준다(db):
     assert len(out) > 0
     keys = list(zip(out["trade_date"], out["window_kind"], out["stock_code"]))
     assert keys == sorted(keys)
+
+
+def test_month_range는_시작과_끝_사이_모든_달을_1일로_나열한다():
+    """2차 재검토 재지시 1번: 코퍼스 공백 월별 표에 0건인 달도 «나타나야»
+    한다 — GROUP BY 는 행이 있는 달만 돌려주므로, 이 함수가 만든 전체
+    달력월 목록에 0으로 채울 대상이 빠지면 공백이 다시 안 보이게 된다."""
+    months = _month_range(date(2026, 1, 15), date(2026, 3, 3))
+
+    assert months == [date(2026, 1, 1), date(2026, 2, 1), date(2026, 3, 1)]
+
+
+def test_month_range는_연말_연초를_건너간다():
+    months = _month_range(date(2025, 11, 20), date(2026, 1, 5))
+
+    assert months == [date(2025, 11, 1), date(2025, 12, 1), date(2026, 1, 1)]
+
+
+def test_month_range는_시작과_끝이_같은_달이면_한_달만_돌려준다():
+    months = _month_range(date(2026, 6, 1), date(2026, 6, 30))
+
+    assert months == [date(2026, 6, 1)]
+
+
+@pytest.mark.db
+def test_corpus_gap_stats는_독립_쿼리와_일치하고_공백달을_0으로_채운다(db):
+    """2차 재검토 재지시 1번: 코퍼스 공백 수치(종목귀속 행수·DART 비중)가
+    리뷰 시점 스냅숏 리터럴(79,485/66,419, 83%)로 하드코딩돼 있다가 실측치
+    (80,241/66,752, 83.2%)와 어긋난 것이 이번 결함이다 — _corpus_gap_stats
+    가 실제로 DB 를 «다시» 재는지, 그리고 그 값이 여기서 독립적으로 다시
+    짠 쿼리(같은 표현을 베끼지 않은)와 같은지를 본다. 또한 2026-06 은
+    국내 언론 기사가 0건이었다는 사실(C1 조사에서 실측)이 결과에서 그냥
+    빠지는 게 아니라 0으로 «나타나는지» 도 함께 확인한다."""
+    from datetime import datetime as dt
+    from datetime import time as dtime
+
+    from scripts.run_news_backtest import _corpus_gap_stats
+
+    start, end = date(2026, 6, 1), date(2026, 6, 30)
+    out = _corpus_gap_stats(db, start, end)
+
+    lo = dt.combine(start, dtime(0, 0))
+    hi = dt.combine(end, dtime(23, 59, 59))
+    conn = db.get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM news_reprocessed WHERE related_stocks <> '' "
+                "AND published_at >= %s AND published_at <= %s", (lo, hi))
+            total = cur.fetchone()[0]
+            cur.execute(
+                "SELECT count(*) FROM news_reprocessed WHERE related_stocks <> '' "
+                "AND source = 'dart' AND published_at >= %s AND published_at <= %s",
+                (lo, hi))
+            dart = cur.fetchone()[0]
+    finally:
+        conn.rollback()
+        db._put_connection(conn)
+
+    assert total > 0
+    assert out["total"] == total
+    assert out["dart"] == dart
+    assert out["dart_share"] == pytest.approx(dart / total)
+
+    months = dict(out["monthly"])
+    assert date(2026, 6, 1) in months          # 빠지지 않고 «나타나야» 한다
+    assert months[date(2026, 6, 1)] == 0       # 그리고 값이 0이어야 한다
