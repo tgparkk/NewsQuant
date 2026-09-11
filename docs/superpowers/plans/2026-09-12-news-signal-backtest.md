@@ -249,7 +249,7 @@ git commit -m "feat(backtest): daily_prices 를 as-of 로 읽는 가격 어댑�
 
 **Files:**
 - Modify: `news_scraper/trading_analyzer.py` (`__init__` `:24-29`, `analyze_today_stocks` `:31-47`, `_volume_cache` 클래스 속성 `:411-412`, `_load_volume_cache` `:414-446`)
-- Create: `tests/fixtures/analyze_today_golden.json`
+- Create: `tests/fixtures/analyze_today_golden.json` — `{"news_rows": [...], "stock_stats": [...]}`. 입력 뉴스를 같이 담아 날짜에 묶이지 않게 한다.
 - Test: `tests/test_trading_analyzer_pit.py`
 
 **Interfaces:**
@@ -265,20 +265,55 @@ git commit -m "feat(backtest): daily_prices 를 as-of 로 읽는 가격 어댑�
 >
 > **생산 동작은 건드리지 않는다.** `as_of=None` 이면 지금 코드 그대로 돈다. 「최근 날짜 1개를 버리고 그 앞 20일」이라는 현행 규칙은 그날 뉴스가 아직 없으면 D-1 을 버리는 문제가 있지만, 그건 이 작업의 범위가 아니다 — §후속에 적어 둔다.
 
-- [ ] **Step 1: 골든 픽스처를 뜬다 (리팩터링 «전» 의 출력)**
+- [ ] **Step 1: 골든 픽스처를 뜬다 (리팩터링 «전» 의 출력 + 그때 읽은 뉴스)**
+
+골든에 **입력 뉴스까지 같이 담는다.** `analyze_today_stocks()` 는 `datetime.now()` 를
+읽으므로 출력만 저장하면 다음 날 입력이 달라져 테스트가 깨진다 — 날짜에 묶이지 않게
+입력을 고정한다.
 
 ```bash
-python - <<'PY'
+PYTHONIOENCODING=utf-8 python - <<'PY'
 import json
+from datetime import datetime
 from news_scraper.trading_analyzer import TradingAnalyzer
+
 a = TradingAnalyzer()
-r = a.analyze_today_stocks()
-r["stock_stats"] = sorted(r["stock_stats"], key=lambda s: s["stock_code"])
+today = datetime.now()
+start = today.replace(hour=0, minute=0, second=0, microsecond=0)
+end = today.replace(hour=23, minute=59, second=59, microsecond=999999)
+rows = a.db.get_news_by_date_range(start.isoformat(), end.isoformat())
+
+result = a.analyze_today_stocks()
+
+# 가격에 의존하지 않는 필드만 고정한다. adjusted_sentiment·composite_score·
+# volume_signal 은 리팩터링 «전» 코드에서 실시간 HTTP 주가를 타므로 재실행마다
+# 값이 달라질 수 있다. 이번에 의도적으로 주입 가능하게 바꾸는 부분이라
+# 동치성 비교의 대상이 아니다.
+PURE = ("news_count", "avg_sentiment", "avg_overall",
+        "positive_count", "negative_count", "neutral_count", "positive_ratio")
+
+golden = {
+    "news_rows": [
+        {"news_id": n.get("news_id"), "title": n.get("title"),
+         "content": n.get("content"), "published_at": n.get("published_at"),
+         "related_stocks": n.get("related_stocks"),
+         "sentiment_score": n.get("sentiment_score"),
+         "overall_score": n.get("overall_score")}
+        for n in rows
+    ],
+    "stock_stats": sorted(
+        [{k: s[k] for k in ("stock_code", *PURE)} for s in result["stock_stats"]],
+        key=lambda s: s["stock_code"],
+    ),
+}
 with open("tests/fixtures/analyze_today_golden.json", "w", encoding="utf-8") as f:
-    json.dump(r, f, ensure_ascii=False, indent=2, default=str)
-print("종목", len(r["stock_stats"]))
+    json.dump(golden, f, ensure_ascii=False, indent=2, default=str)
+print("뉴스", len(golden["news_rows"]), "종목", len(golden["stock_stats"]))
 PY
 ```
+
+> 뉴스가 0건이면(장 시작 전 등) 골든이 비어 동치성 테스트가 아무것도 지키지 못한다.
+> 출력된 「뉴스 N」이 0 이면 **멈추고 보고한다.**
 
 - [ ] **Step 2: 실패하는 테스트를 쓴다**
 
@@ -373,19 +408,44 @@ def test_볼륨_기준선이_as_of_이전_뉴스만_쓴다(db):
     assert early != b._volume_cache
 
 
-def test_생산_경로는_예전과_같은_결과를_낸다(db):
-    """인자 없이 부르면 리팩터링 전과 한 글자도 다르면 안 된다."""
+PURE_FIELDS = ("news_count", "avg_sentiment", "avg_overall",
+               "positive_count", "negative_count", "neutral_count", "positive_ratio")
+
+
+def test_골든에_뉴스와_종목이_들어있다():
+    """비어 있으면 아래 동치성 테스트가 아무것도 지키지 못한다."""
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
 
-    result = TradingAnalyzer().analyze_today_stocks()
+    assert len(golden["news_rows"]) > 0
+    assert len(golden["stock_stats"]) > 0
+
+
+def test_집계_로직이_리팩터링_전과_같다(db):
+    """골든에 담아 둔 «그때 그 뉴스» 를 그대로 먹여 비교한다.
+
+    가격에 의존하는 adjusted_sentiment·composite_score·volume_signal 은 뺀다 —
+    리팩터링 전 코드가 실시간 HTTP 주가를 타서 재실행마다 달라질 수 있고,
+    가격 조회는 이번에 «의도적으로» 주입 가능하게 바꾸는 부분이다.
+    """
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    rows = [dict(n) for n in golden["news_rows"]]
+
+    result = TradingAnalyzer(price_fetcher=FakePriceFetcher()).analyze_stocks(rows)
 
     got = sorted(result["stock_stats"], key=lambda s: s["stock_code"])
     want = golden["stock_stats"]
-    assert len(got) == len(want)
+    assert [g["stock_code"] for g in got] == [w["stock_code"] for w in want]
     for g, w in zip(got, want):
-        assert g["stock_code"] == w["stock_code"]
-        assert g["composite_score"] == pytest.approx(w["composite_score"])
-        assert g["news_count"] == w["news_count"]
+        for field in PURE_FIELDS:
+            assert g[field] == pytest.approx(w[field]), f"{g['stock_code']}.{field}"
+
+
+def test_생산_경로가_오류없이_돌고_같은_키를_돌려준다(db):
+    """analyze_today_stocks() 를 인자 없이 부르는 경로가 살아 있는가."""
+    result = TradingAnalyzer().analyze_today_stocks()
+
+    assert set(result) >= {"total_news", "stocks_mentioned", "buy_candidates",
+                           "sell_candidates", "watch_candidates", "stock_stats"}
 ```
 
 - [ ] **Step 3: 실패를 확인한다**
@@ -510,8 +570,8 @@ Expected: FAIL — `TypeError: __init__() got an unexpected keyword argument 'pr
 
 - [ ] **Step 7: 통과를 확인한다**
 
-Run: `python -m pytest tests/test_trading_analyzer_pit.py -v`
-Expected: 5 passed
+Run: `PYTHONIOENCODING=utf-8 python -m pytest tests/test_trading_analyzer_pit.py -v`
+Expected: 7 passed
 
 - [ ] **Step 8: 전체 스위트가 깨지지 않았는지 본다**
 
