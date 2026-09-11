@@ -33,6 +33,12 @@ DEFAULT_REQUEST_DELAY = 0.5
 # 타임아웃 회수 경로로 빠지지 않고 정상 반환하게 한다.
 DEFAULT_TIME_BUDGET = 240
 
+# 모든 크롤러가 쓰는 고정 User-Agent (최신 데스크톱 Chrome).
+DEFAULT_USER_AGENT = (
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    '(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'
+)
+
 # HTML 의 charset 메타 태그에서 인코딩을 뽑는다
 _CHARSET_RE = re.compile(r'charset\s*=\s*["\']?([^"\'\s>]+)', re.IGNORECASE)
 
@@ -297,16 +303,10 @@ class BaseCrawler(ABC):
             maximum=max_request_delay,
         )
         self._stats = self._fresh_stats()
-        self.user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (iPhone; CPU iPhone OS 17_1_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1.2 Mobile/15E148 Safari/604.1'
-        ]
-        import random
+        # UA 는 하나로 고정한다. 무작위 풀은 차단 대상을 (IP x UA 5개) 로 넓히고,
+        # UA 마다 결과가 달라져 429 신호를 가렸다 (2026-09-11 한국경제 차단 사례).
         self.headers = headers or {
-            'User-Agent': random.choice(self.user_agents),
+            'User-Agent': DEFAULT_USER_AGENT,
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'ko-KR,ko;q=0.8,en-US;q=0.5,en;q=0.3',
             'Connection': 'keep-alive',

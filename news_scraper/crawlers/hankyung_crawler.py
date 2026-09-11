@@ -13,28 +13,45 @@ from ..base_crawler import BaseCrawler
 
 logger = logging.getLogger(__name__)
 
+# 기사 URL 만 골라내는 패턴. 목록 파서가 내비게이션 링크(도메인 루트,
+# /premium9/... 섹션 페이지)까지 긁어오는데, 이런 항목에는 날짜 태그가 없어
+# parse_date_string() 이 now() 를 돌려준다. now() 는 어떤 실제 기사 시각보다
+# 크므로 최신순 정렬 1등을 싹쓸이하고 매 사이클 갱신돼 영구히 1등을 지켰다
+# (실측: 상세 예산 30건이 기사 아닌 URL 3개에 쓰였다).
+# DB 누적 10,128행 중 /article/숫자 가 10,122행이고 나머지 6건은 본문 0자다.
+ARTICLE_URL_RE = re.compile(r'/article/\d+')
+
 
 class HankyungCrawler(BaseCrawler):
     """한국경제 뉴스 크롤러"""
     
     BASE_URL = "https://www.hankyung.com"
     NEWS_LIST_URL = "https://www.hankyung.com/economy"
-    
-    def __init__(self):
-        super().__init__("hankyung")
-    
+
+    DEFAULT_DETAIL_FETCH_LIMIT = 30
+
+    def __init__(self, detail_fetch_limit: int = DEFAULT_DETAIL_FETCH_LIMIT, **kwargs):
+        """
+        Args:
+            detail_fetch_limit: 전문을 추가로 받아올 최신 기사 수.
+                                나머지는 목록 페이지의 요약을 본문으로 쓴다.
+        """
+        super().__init__("hankyung", **kwargs)
+        self.detail_fetch_limit = detail_fetch_limit
+
     def crawl_news_list(self, max_pages: int = 5) -> List[Dict]:
         """뉴스 목록 크롤링"""
-        news_list = []
-        
+        # 목록 파서가 중첩 div 를 전부 잡아 같은 기사가 섹션·페이지에 거듭 실린다
+        # (실측: 항목 717건 -> distinct 176건, 중복 4.07배). url 을 키로 모은다.
+        collected: Dict[str, Dict] = {}
+
         # 경제/증시 섹션 URL들
+        # financial-market(금융시장)·distribution(유통)은 사이트 개편으로 사라져 제거했다 (2026-09-11 실측 404).
         sections = [
             {'url': 'https://www.hankyung.com/economy', 'name': '경제'},
-            {'url': 'https://www.hankyung.com/financial-market', 'name': '금융시장'},
             {'url': 'https://www.hankyung.com/industry', 'name': '산업'},
             {'url': 'https://www.hankyung.com/tech', 'name': '기술'},
-            {'url': 'https://www.hankyung.com/international', 'name': '국제'},
-            {'url': 'https://www.hankyung.com/distribution', 'name': '유통'}
+            {'url': 'https://www.hankyung.com/international', 'name': '국제'}
         ]
         
         for section in sections:
@@ -75,7 +92,14 @@ class HankyungCrawler(BaseCrawler):
                                 continue
                             
                             news_url = urljoin(self.BASE_URL, relative_url)
-                            
+
+                            # 기사가 아닌 링크는 여기서 버린다 - DB 로도 나가지 않게.
+                            if not ARTICLE_URL_RE.search(news_url):
+                                continue
+
+                            if news_url in collected:
+                                continue
+
                             # 날짜 정보
                             date_tag = item.find(class_=re.compile(r'date|time|pub|reg'))
                             if not date_tag:
@@ -107,8 +131,8 @@ class HankyungCrawler(BaseCrawler):
                                 'sentiment_score': None
                             }
                             
-                            news_list.append(news_data)
-                            
+                            collected[news_url] = news_data
+
                         except Exception as e:
                             logger.debug(f"뉴스 항목 파싱 오류: {e}")
                             continue
@@ -119,8 +143,21 @@ class HankyungCrawler(BaseCrawler):
                     logger.error(f"[{self.source_name}] 페이지 {page} 크롤링 오류: {e}")
                     continue
         
-        # 상세 내용 크롤링 (모든 뉴스에 대해 수행)
-        for news in news_list:
+        news_list = list(collected.values())
+        self._enrich_with_bodies(news_list)
+        return news_list
+
+    def _enrich_with_bodies(self, news_list: List[Dict]) -> None:
+        """최신 N 건만 전문을 받아 본문을 채운다.
+
+        나머지는 목록 페이지에서 뽑은 요약을 그대로 쓴다. 사이클당 수백 건의
+        상세 요청은 시간 예산을 통째로 잡아먹고, hankyung.com 은 그 트래픽에
+        Cloudflare 24시간 차단으로 답했다 (2026-09-11 실측 429).
+        """
+        # parse_date_string() 은 항상 ISO 문자열을 돌려주므로 문자열 정렬로 충분하다.
+        news_list.sort(key=lambda n: n['published_at'], reverse=True)
+
+        for news in news_list[:self.detail_fetch_limit]:
             try:
                 summary = news.get('content') or ""  # 목록 페이지에서 추출한 요약
                 detail = self.crawl_news_detail(news['url'])
@@ -170,9 +207,7 @@ class HankyungCrawler(BaseCrawler):
                 else:
                     news['content'] = summary or ""
                 continue
-        
-        return news_list
-    
+
     def crawl_news_detail(self, url: str) -> Optional[Dict]:
         """뉴스 상세 내용 크롤링"""
         soup = self.fetch_page(url)
