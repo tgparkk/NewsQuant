@@ -97,19 +97,42 @@ def hit_rate(df: pd.DataFrame, ret_col: str = "excess_h1", top_n: int = 10,
     return float((picked[ret_col] > 0).mean()) if len(picked) else float("nan")
 
 
+def _shuffle_within_day(work: pd.DataFrame, score_col: str,
+                        rng: np.random.Generator) -> pd.Series:
+    """거래일(trade_date) 경계를 넘지 않고 그 날 안에서만 점수를 뒤섞는다.
+
+    permutation_test 가 이 함수를 통해서만 셔플하도록 분리해 둔 이유는
+    "날짜 경계를 지키는지" 를 이 함수 하나로 직접 테스트할 수 있게 하기
+    위해서다 — p_value 비교로는 이 성질을 못 잡는다(모듈 하단 테스트의
+    코멘트 참고): 스피어만은 순위통계라, 같은 크기의 부분집합을 «그 날
+    자신의 값만으로» 섞든 «전체 풀에서» 섞든 그 날의 상대순위 분포 자체는
+    수학적으로 항상 균등무작위가 되어 버려 통계량만으로는 구별되지 않는다.
+    """
+    return work.groupby("trade_date")[score_col].transform(
+        lambda s: rng.permutation(s.values))
+
+
 def permutation_test(df: pd.DataFrame, ret_col: str = "excess_h1",
                      n_iter: int = 500, seed: int = 0,
                      score_col: str = "composite_score") -> Dict:
     """거래일 안에서 점수를 섞어 평균 IC 분포를 만들고 실제값 위치를 본다."""
     observed = float(daily_ic(df, score_col, ret_col).mean())
+    if not math.isfinite(observed):
+        # 살아남는 거래일이 하나도 없으면(=관측치가 없으면) observed 가
+        # NaN 이다. 이럴 때 순열을 그냥 돌리면 abs(nan) >= abs(nan) 이
+        # 항상 False 라 hits=0, p_value=1/(n_iter+1) — 표본이 «전혀» 없는데
+        # 가장 유의해 보이는 값이 나오는 최악의 오답이다. 관측이 없으면
+        # 유의해 보여서는 안 되므로 즉시 NaN 을 돌려주고, n_iter=0 으로
+        # 표본이 없었다는 사실 자체를 드러낸다.
+        return {"observed": observed, "p_value": float("nan"), "n_iter": 0}
+
     rng = np.random.default_rng(seed)
     work = df.dropna(subset=[score_col, ret_col]).copy()
 
     hits = 0
+    shuffled = work.copy()  # 루프 밖에서 한 번만 만들고 점수 컬럼만 매 반복 덮어쓴다.
     for _ in range(n_iter):
-        shuffled = work.copy()
-        shuffled[score_col] = (work.groupby("trade_date")[score_col]
-                                   .transform(lambda s: rng.permutation(s.values)))
+        shuffled[score_col] = _shuffle_within_day(work, score_col, rng)
         if abs(float(daily_ic(shuffled, score_col, ret_col).mean())) >= abs(observed):
             hits += 1
 
