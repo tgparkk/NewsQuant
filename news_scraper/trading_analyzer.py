@@ -20,32 +20,48 @@ logger = logging.getLogger(__name__)
 class TradingAnalyzer:
     """매매 판단 분석기"""
     
-    def __init__(self, db_path: str = "news_data.db"):
+    def __init__(self, db_path: str = "news_data.db", price_fetcher=None):
         """
         Args:
             db_path: 데이터베이스 파일 경로
+            price_fetcher: 주가 조회기. 백테스트는 DailyPriceAsOf 를 넣어
+                «과거 시점» 으로 돌린다. 생략하면 생산용 PriceFetcher.
         """
         self.db = NewsDatabase(db_path)
-        self.price_fetcher = PriceFetcher()
-    
+        self.price_fetcher = price_fetcher or PriceFetcher()
+        # 클래스 속성이면 인스턴스 사이로 새 나간다. 거래일마다 분석기를
+        # 새로 만드는 백테스트에서는 첫날 캐시가 내내 재사용된다.
+        self._volume_cache: Dict = {}
+        self._volume_cache_loaded: bool = False
+
     def analyze_today_stocks(self) -> Dict:
         """
-        오늘자 뉴스 기반 종목 분석
-        
-        Returns:
-            분석 결과 딕셔너리
+        오늘자 뉴스 기반 종목 분석 (생산 경로).
+
+        창 계산과 조회만 하고 집계는 analyze_stocks() 에 넘긴다.
+        인자 없이 부르는 이 경로의 결과는 예전과 «완전히 같아야» 한다.
         """
-        # 오늘 날짜 범위 설정
         today = datetime.now()
         start_date = today.replace(hour=0, minute=0, second=0, microsecond=0)
         end_date = today.replace(hour=23, minute=59, second=59, microsecond=999999)
-        
-        # 오늘자 뉴스 조회
+
         today_news = self.db.get_news_by_date_range(
             start_date.isoformat(),
             end_date.isoformat()
         )
-        
+        return self.analyze_stocks(today_news, as_of=None)
+
+    def analyze_stocks(self, news_rows: List[Dict], as_of: Optional[datetime] = None) -> Dict:
+        """뉴스 목록을 받아 종목별 신호를 만든다.
+
+        as_of 를 주면 볼륨 기준선을 그 시점 «이전» 뉴스로만 만든다.
+        생산 경로는 None 을 넘겨 기존 동작을 그대로 쓴다.
+        """
+        today_news = news_rows
+        self._as_of = as_of
+        # analysis_date 표기용 — as_of 가 있으면 그 시점을, 없으면(생산 경로) 지금을 쓴다.
+        today = as_of if as_of is not None else datetime.now()
+
         if len(today_news) == 0:
             return {
                 'total_news': 0,
@@ -407,24 +423,33 @@ class TradingAnalyzer:
 
     # ─── 뉴스 볼륨 역발상 시그널 ─────────────────────────────
 
-    # 종목별 일평균 뉴스 수 캐시 (세션 내 재사용)
-    _volume_cache: Dict = {}
-    _volume_cache_loaded: bool = False
+    def _load_volume_cache(self, as_of: Optional[datetime] = None):
+        """전 종목의 일별 뉴스 수를 한 번에 로드 (LIKE 반복 대신 한 번 풀스캔).
 
-    def _load_volume_cache(self):
-        """전 종목의 일별 뉴스 수를 한 번에 로드 (LIKE 반복 대신 한 번 풀스캔)"""
+        as_of 를 주면 그 시점 «이전» 뉴스만 센다. 주지 않으면 예전처럼
+        전체를 읽고 최근 날짜 1개를 버린다(생산 경로).
+        """
         if self._volume_cache_loaded:
             return
 
         try:
             conn = self.db.get_connection()
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT DATE(published_at) as d, related_stocks
-                FROM news
-                WHERE related_stocks IS NOT NULL AND related_stocks != ''
-                ORDER BY d DESC
-            """)
+            if as_of is None:
+                cursor.execute("""
+                    SELECT DATE(published_at) as d, related_stocks
+                    FROM news
+                    WHERE related_stocks IS NOT NULL AND related_stocks != ''
+                    ORDER BY d DESC
+                """)
+            else:
+                cursor.execute("""
+                    SELECT DATE(published_at) as d, related_stocks
+                    FROM news
+                    WHERE related_stocks IS NOT NULL AND related_stocks != ''
+                      AND published_at < %s
+                    ORDER BY d DESC
+                """, (as_of,))
             rows = cursor.fetchall()
             self.db._put_connection(conn)
 
@@ -437,13 +462,16 @@ class TradingAnalyzer:
                     if len(code) == 6 and code.isdigit():
                         stock_daily[code][d_str] += 1
 
-            # 종목별 일평균 (최근 20일, 오늘 제외)
+            # 종목별 일평균 (최근 20일)
+            # 생산 경로는 오늘자가 섞여 있으므로 최근 1일을 버린다.
+            # as_of 경로는 쿼리에서 이미 잘렸으므로 버리면 안 된다.
+            skip = 0 if as_of is not None else 1
             for code, daily in stock_daily.items():
                 dates = sorted(daily.keys(), reverse=True)
-                if len(dates) <= 1:
+                if len(dates) <= skip:
                     self._volume_cache[code] = 0
                 else:
-                    counts = [daily[d] for d in dates[1:21]]  # 오늘 제외, 최근 20일
+                    counts = [daily[d] for d in dates[skip:skip + 20]]
                     self._volume_cache[code] = sum(counts) / len(counts) if counts else 0
 
             self._volume_cache_loaded = True
@@ -462,7 +490,7 @@ class TradingAnalyzer:
         Returns:
             볼륨 시그널 점수 (-0.5 ~ +0.1)
         """
-        self._load_volume_cache()
+        self._load_volume_cache(getattr(self, "_as_of", None))
 
         avg_count = self._volume_cache.get(stock_code, 0)
         if avg_count <= 0:
