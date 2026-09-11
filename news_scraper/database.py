@@ -217,7 +217,11 @@ class NewsDatabase:
                 news_id = news_data.get('news_id')
                 published_at = self._parse_timestamp(news_data.get('published_at'))
 
-                # UPSERT: 존재하면 duplicate_count 증가, 없으면 INSERT
+                # UPSERT: 존재하면 duplicate_count 증가, 없으면 INSERT.
+                # content 는 «더 긴 쪽» 을 남긴다 - 크롤러가 사이클당 최신 N 건만
+                # 전문을 받으므로, 예산 밖이라 목록 요약만 저장됐던 기사가 나중에
+                # 전문과 함께 다시 들어오면 채워져야 한다. 구 규칙은 content 를
+                # 건드리지 않아 한 번 비면 영구히 비었다 (2026-09-11 한경 사례).
                 cursor.execute("""
                     INSERT INTO news
                     (news_id, title, content, published_at, source, category,
@@ -225,6 +229,10 @@ class NewsDatabase:
                      impact_score, timeliness_score, overall_score, duplicate_count, updated_at)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, NOW())
                     ON CONFLICT (news_id) DO UPDATE SET
+                        content = CASE
+                            WHEN COALESCE(length(EXCLUDED.content), 0)
+                               > COALESCE(length(news.content), 0)
+                            THEN EXCLUDED.content ELSE news.content END,
                         duplicate_count = news.duplicate_count + 1,
                         updated_at = NOW()
                 """, (
@@ -277,6 +285,10 @@ class NewsDatabase:
                              impact_score, timeliness_score, overall_score, duplicate_count, updated_at)
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, NOW())
                             ON CONFLICT (news_id) DO UPDATE SET
+                                content = CASE
+                                    WHEN COALESCE(length(EXCLUDED.content), 0)
+                                       > COALESCE(length(news.content), 0)
+                                    THEN EXCLUDED.content ELSE news.content END,
                                 duplicate_count = news.duplicate_count + 1,
                                 updated_at = NOW()
                         """, (
