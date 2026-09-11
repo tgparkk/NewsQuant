@@ -21,7 +21,6 @@ import subprocess
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 TABLE = "news_reprocessed"
 
