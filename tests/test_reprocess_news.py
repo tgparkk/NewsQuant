@@ -237,3 +237,205 @@ def test_다중_종목_mention_은_impact_를_높인다(db):
         conn.commit()
     finally:
         db._put_connection(conn)
+
+
+def test_DART_content_기업명으로_코드를_복원한다(db):
+    """DART 행의 content 에 '기업명: 삼현철강' 이면 017480 을 복원한다."""
+    ensure_table(db)
+    conn = db.get_connection()
+
+    sid = "test-dart-content"
+
+    try:
+        with conn.cursor() as cur:
+            # 청소
+            cur.execute("DELETE FROM news_reprocessed WHERE news_id = %s", (sid,))
+            cur.execute("DELETE FROM news WHERE news_id = %s", (sid,))
+
+            # DART 행 — content 에 기업명
+            cur.execute("""
+                INSERT INTO news (news_id, title, content, published_at, source,
+                                  category, url, related_stocks, sentiment_score)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (sid, "공시 공지", "기업명: 삼현철강\n공시제목: 임원변동\n접수번호: 123\n시장: 코스피",
+                  datetime(2026, 6, 15, 10, 0), "dart", "공시",
+                  "https://example.invalid/dart", "", 0))
+
+        conn.commit()
+    finally:
+        db._put_connection(conn)
+
+    reprocess(db, apply=True, only_news_id=sid)
+
+    conn = db.get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT related_stocks FROM news_reprocessed WHERE news_id = %s",
+                        (sid,))
+            stocks = cur.fetchone()[0]
+            assert stocks == "017480", f"Expected 017480, got {stocks}"
+    finally:
+        conn.rollback()
+        db._put_connection(conn)
+
+    # 청소
+    conn = db.get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM news_reprocessed WHERE news_id = %s", (sid,))
+            cur.execute("DELETE FROM news WHERE news_id = %s", (sid,))
+        conn.commit()
+    finally:
+        db._put_connection(conn)
+
+
+def test_DART_title_괄호로_코드를_복원한다(db):
+    """DART 행의 title 이 '[효성 ITX] ...' 이면 094280 을 복원한다 (공백 정규화)."""
+    ensure_table(db)
+    conn = db.get_connection()
+
+    sid = "test-dart-title"
+
+    try:
+        with conn.cursor() as cur:
+            # 청소
+            cur.execute("DELETE FROM news_reprocessed WHERE news_id = %s", (sid,))
+            cur.execute("DELETE FROM news WHERE news_id = %s", (sid,))
+
+            # DART 행 — title 에 [회사명 공백]
+            cur.execute("""
+                INSERT INTO news (news_id, title, content, published_at, source,
+                                  category, url, related_stocks, sentiment_score)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (sid, "[효성 ITX] 공시 공지", "기업명: 효성ITX\n공시제목: 임원\n접수번호: 456\n시장: 코스피",
+                  datetime(2026, 6, 15, 10, 0), "dart", "공시",
+                  "https://example.invalid/dart2", "", 0))
+
+        conn.commit()
+    finally:
+        db._put_connection(conn)
+
+    reprocess(db, apply=True, only_news_id=sid)
+
+    conn = db.get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT related_stocks FROM news_reprocessed WHERE news_id = %s",
+                        (sid,))
+            stocks = cur.fetchone()[0]
+            assert stocks == "094280", f"Expected 094280, got {stocks}"
+    finally:
+        conn.rollback()
+        db._put_connection(conn)
+
+    # 청소
+    conn = db.get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM news_reprocessed WHERE news_id = %s", (sid,))
+            cur.execute("DELETE FROM news WHERE news_id = %s", (sid,))
+        conn.commit()
+    finally:
+        db._put_connection(conn)
+
+
+def test_DART_모르는_회사명은_문자_추출로_폴백한다(db):
+    """DART 행의 회사명이 stock_info 에 없으면 에러 없이 문자 추출로 폴백한다."""
+    ensure_table(db)
+    conn = db.get_connection()
+
+    sid = "test-dart-unknown"
+
+    try:
+        with conn.cursor() as cur:
+            # 청소
+            cur.execute("DELETE FROM news_reprocessed WHERE news_id = %s", (sid,))
+            cur.execute("DELETE FROM news WHERE news_id = %s", (sid,))
+
+            # DART 행 — 모르는 회사명
+            cur.execute("""
+                INSERT INTO news (news_id, title, content, published_at, source,
+                                  category, url, related_stocks, sentiment_score)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (sid, "[Unknown Corp] 뉴스", "기업명: UnknownCorp123\n공시제목: 임원\n삼성 SK 관련",
+                  datetime(2026, 6, 15, 10, 0), "dart", "공시",
+                  "https://example.invalid/dart3", "", 0))
+
+        conn.commit()
+    finally:
+        db._put_connection(conn)
+
+    reprocess(db, apply=True, only_news_id=sid)
+
+    conn = db.get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT related_stocks FROM news_reprocessed WHERE news_id = %s",
+                        (sid,))
+            stocks = cur.fetchone()[0]
+            # 폴백으로 문자 추출되어야 함 — 005930(삼성), 006400(SK) 등
+            assert stocks, f"Expected some extraction, got empty"
+    finally:
+        conn.rollback()
+        db._put_connection(conn)
+
+    # 청소
+    conn = db.get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM news_reprocessed WHERE news_id = %s", (sid,))
+            cur.execute("DELETE FROM news WHERE news_id = %s", (sid,))
+        conn.commit()
+    finally:
+        db._put_connection(conn)
+
+
+def test_비DART_행은_영향받지_않는다(db):
+    """비-DART 행은 DART 리졸버 영향 없이 기존 동작."""
+    ensure_table(db)
+    conn = db.get_connection()
+
+    sid = "test-non-dart"
+
+    try:
+        with conn.cursor() as cur:
+            # 청소
+            cur.execute("DELETE FROM news_reprocessed WHERE news_id = %s", (sid,))
+            cur.execute("DELETE FROM news WHERE news_id = %s", (sid,))
+
+            # 비-DART 행
+            cur.execute("""
+                INSERT INTO news (news_id, title, content, published_at, source,
+                                  category, url, related_stocks, sentiment_score)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (sid, "삼성 뉴스", "삼성전자가 신제품을 발표했다",
+                  datetime(2026, 6, 15, 10, 0), "test_source", "산업",
+                  "https://example.invalid/other", "", 0))
+
+        conn.commit()
+    finally:
+        db._put_connection(conn)
+
+    reprocess(db, apply=True, only_news_id=sid)
+
+    conn = db.get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT related_stocks FROM news_reprocessed WHERE news_id = %s",
+                        (sid,))
+            stocks = cur.fetchone()[0]
+            # 문자 추출로 삼성(005930) 을 얻어야 함
+            assert "005930" in stocks.split(","), f"Expected 005930 in {stocks}"
+    finally:
+        conn.rollback()
+        db._put_connection(conn)
+
+    # 청소
+    conn = db.get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM news_reprocessed WHERE news_id = %s", (sid,))
+            cur.execute("DELETE FROM news WHERE news_id = %s", (sid,))
+        conn.commit()
+    finally:
+        db._put_connection(conn)
