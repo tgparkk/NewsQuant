@@ -97,14 +97,15 @@ def reprocess(db, apply: bool = False, limit: Optional[int] = None,
                 if only_news_id:
                     cur.execute("SELECT count(*) FROM news WHERE news_id = %s",
                                 (only_news_id,))
+                    candidates = cur.fetchone()[0]
                 else:
-                    tail = f" LIMIT {int(limit)}" if limit else ""
-                    query = f"SELECT count(*) FROM news{tail}"
+                    # limit 을 존중해서 후보를 센다 (LIMIT count(*) 는 no-op)
                     if limit:
-                        cur.execute(query)
+                        cur.execute("SELECT count(*) FROM (SELECT 1 FROM news ORDER BY news_id LIMIT %s) t",
+                                    (limit,))
                     else:
                         cur.execute("SELECT count(*) FROM news")
-                candidates = cur.fetchone()[0]
+                    candidates = cur.fetchone()[0]
                 conn.rollback()
             else:
                 # 배치 처리 — 키셋 페이지네이션으로 진행을 저장한다
@@ -143,13 +144,15 @@ def reprocess(db, apply: bool = False, limit: Optional[int] = None,
                         text = f"{title or ''} {content or ''}"
                         extracted_stocks = extractor.extract_stock_codes(text)
 
-                        # 완전한 news dict 를 analyzer 에 준다
+                        # 완전한 news dict 를 analyzer 에 준다 (published_at 은 ISO-8601 문자열)
+                        pub_at_str = published_at.isoformat() if published_at else ""
                         scored = analyzer.analyze_news({
                             "title": title or "",
                             "content": content or "",
                             "source": source or "",
                             "category": category or "",
-                            "related_stocks": extracted_stocks or ""
+                            "related_stocks": extracted_stocks or "",
+                            "published_at": pub_at_str
                         })
 
                         cur.execute(f"""
