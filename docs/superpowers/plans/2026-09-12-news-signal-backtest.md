@@ -15,7 +15,7 @@
 - **생산 동작 불변.** `analyze_today_stocks()` 를 인자 없이 부르면 리팩터링 전과 **완전히 같은 결과**를 내야 한다. Task 2 의 골든 테스트가 이것을 지킨다.
 - **미래 참조 금지.** 뉴스는 `published_at <= as_of`, 가격은 `date < as_of.date()` 까지만 본다. Task 1·2·4 에 각각 테스트를 건다.
 - **운영 테이블을 덮어쓰지 않는다.** 재처리 결과는 `news_reprocessed` 에 쌓는다. `news` 는 읽기만 한다.
-- **DB 컬럼 형식.** `daily_prices.date` 는 TEXT `'YYYY-MM-DD'`, `daily_prices.stock_code` 는 `character(6)`. 조인할 때 `to_char(d, 'YYYY-MM-DD')` 와 `trim()` 을 쓴다. 틀리면 조인이 **조용히 0행**이 된다.
+- **DB 컬럼 형식.** `daily_prices.date` 는 TEXT `'YYYY-MM-DD'` 다 — 조인할 때 `to_char(d, 'YYYY-MM-DD')` 를 쓴다. 틀리면 조인이 **조용히 0행**이 된다. `stock_code` 는 `character varying` 이고 패딩된 행이 0 이므로 `trim()` 은 무해한 방어일 뿐이다.
 - **배치 스크립트는 기본 dry-run**, `--apply` 로만 쓴다. `scripts/backfill_dart_published_at.py` 관례를 따른다.
 - **DB 테스트는** `pytest.mark.db` + 센티널 관례를 따른다. `tests/test_dart_backfill.py` 를 본보기로 삼는다.
 - 코드·주석·커밋 메시지는 한국어. 기존 파일의 문체를 따른다.
@@ -1337,7 +1337,7 @@ def test_창이_다르면_따로_평균낸다():
 
 @pytest.mark.db
 def test_실DB_조인이_0행을_내지_않는다(db):
-    """daily_prices.date 는 TEXT 'YYYY-MM-DD', stock_code 는 character(6) 다.
+    """daily_prices.date 는 TEXT 'YYYY-MM-DD' 다.
     형식을 틀리면 조인 결과가 «조용히» 0행이 된다 — 설계 중 실제로 겪었다."""
     from news_scraper.backtest.returns import load_returns
 
