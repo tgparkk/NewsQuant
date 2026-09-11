@@ -8,17 +8,27 @@
 2026-06-15 부터라 169 거래일 중 넉 달이 빈다. IC 는 어차피 순위상관이라
 횡단면이고 시장중립이다.
 
-daily_prices.returns_1d 는 (close-prev)/prev 의 «소수» 이고 수정주가가
-아니다. 거래소 일간 가격제한폭 ±30% 는 «종가 대 전일 종가» 에 걸리는
-규칙이다 — «시가 대 종가»(ret_h0) 는 이 규칙의 대상이 아니다. 상한가
-근처에서 열려 하한가 근처에서 닫히는(또는 반대) 날은 이 규칙을 어기지
-않으면서도 시가 대비로는 30% 를 크게 넘을 수 있다 — 그런 날이 바로 뉴스
-신호가 있다면 가장 크게 반응했을 날이라, ret_h0 자체에 ±30% 를 걸면
-연구 대상인 극단값을 결과에 유리한 방향으로(상관을 0쪼으로) 지워버린다.
-그래서 기업행위 판정은 returns_1d 창(당일 및 D+5 까지의 종가-종가) 에만
-건다 — 2026년 430,912건 중 441건(0.102%)뿐이다. returns_1d 가 NULL(신규
-상장 등 전일 종가가 없음) 인 진입일도 같은 이유로 뺀다 — 그 날은
-«시가 대비» 판단 자체가 근거가 없다.
+기업행위(±30% 규칙) 판정은 «이 파일에서 딱 한 곳» — load_returns 안에서
+returns_1d 로만 한다. daily_prices.returns_1d 는 (close-prev)/prev 의
+«소수» 이고 수정주가가 아니다. 거래소 일간 가격제한폭 ±30% 는 정확히
+이 값(«종가 대 전일 종가»)에 걸리는 규칙이므로, returns_1d 가 그 한도를
+넘으면 정의상 수익이 아니라 기업행위다 — 2026년 430,912건 중 441건
+(0.102%)뿐이다. returns_1d 가 NULL(신규상장 등 전일 종가가 없음)인
+진입일도 같은 이유로 뺀다 — 그 날은 판단 근거 자체가 없다.
+
+그 외의 어떤 값도(ret_h0/h1/h5, 즉 «시가 대 종가»·«시가 대 D+1 종가»·
+«시가 대 D+5 종가») ±30% 규칙의 대상이 아니다 — 이 규칙은 언제나 «전일
+종가 대비 하루» 를 재는 규칙이라, 시가를 기준점으로 삼거나 여러 날을
+누적하는 순간 더는 이 규칙이 바인딩하지 않는다. 실측(2026-01-01~09-11,
+returns_1d 창 통과 후): ret_h0 는 436,197건 중 280건(0.06%, 상한가/하한가
+세션)이 30% 를 넘고, ret_h1(2세션 누적)은 433,417건 중 1,967건(0.45%),
+ret_h5(6세션 누적)은 422,353건 중 10,105건(2.39%)이 넘는다 — 연속
+상한가만 이틀이면 누적 +69%를 넘으므로 이건 전부 정상적인 수익이다.
+attach_returns 가 이 값들에 같은 ±30% 를 다시 걸면(과거에 실제로 그런
+버그가 있었다) 연구 대상인 극단값을 결과에 유리한 방향으로(상관을
+0쪽으로) 지우는 outcome-dependent truncation 이 된다 — h5 가 가장 크게
+영향받는데, 느리게 퍼지는 뉴스 효과가 가장 있을 법한 지점이 바로 거기다.
+그래서 attach_returns 는 입력을 그대로 믿고 «병합·차감만» 한다.
 """
 import logging
 from datetime import date, timedelta
@@ -31,15 +41,23 @@ logger = logging.getLogger(__name__)
 HORIZONS = (0, 1, 5)
 CORPORATE_ACTION_LIMIT = 0.30
 
-# h5(5거래일 뒤 종가)를 구하려면 end 뒤의 가격도 읽어야 한다. 거래소
-# 공휴일이 이어져도 10 달력일이면 5 거래일을 덮는다.
-_FORWARD_PAD_DAYS = 10
+# h5(5거래일 뒤 종가)를 구하려면 end 뒤의 가격도 읽어야 한다. 달력일이
+# 아니라 «거래일» 5개를 덮어야 하는데, 연휴가 겹치면 달력일 간격이
+# 꽤 벌어진다 — 실측(trading_days(), 2026-01-01~09-11, 171 거래일)으로
+# 진입일→5거래일뒤 캘린더 갭의 최댓값이 12일이었다(2026-02-11→02-23,
+# 설 연휴+주말). 여기에 여유를 얹어 15로 잡는다.
+_FORWARD_PAD_DAYS = 15
 
 
 def load_returns(db, start: date, end: date) -> pd.DataFrame:
     """거래일별 (종목, 진입 시가 기준 수익). 기업행위 구간은 뺀다.
 
-    daily_prices 조회 상한은 end 가 아니라 end + 10 달력일이다 — 안 그러면
+    기업행위 판정은 «여기 한 곳» 뿐이다(모듈 docstring) — returns_1d 창이
+    당일부터 D+5 까지 하루라도 ±30% 를 넘으면 그 진입 전체를 버리고,
+    진입일 자체의 returns_1d 가 NULL(신규상장 등)이어도 버린다. ret_h0/
+    h1/h5 자체에는 이 한도를 걸지 않는다 — attach_returns 도 마찬가지다.
+
+    daily_prices 조회 상한은 end 가 아니라 end + 15 달력일이다 — 안 그러면
     요청 범위 «마지막» 며칠의 신호는 h1/h5 를 구할 가격이 아직 안 읽혀
     전부 NaN 이 된다. 진입(entry) 자체는 마지막 WHERE 로 [start, end]
     안으로만 되돌린다 — 반환되는 trade_date 는 항상 요청 범위 안이다.
@@ -100,11 +118,15 @@ def load_returns(db, start: date, end: date) -> pd.DataFrame:
 def attach_returns(signals: pd.DataFrame, rets: pd.DataFrame) -> pd.DataFrame:
     """신호에 수익을 붙이고 거래일·창별 횡단면 평균을 뺀다.
 
+    기업행위 판정은 하지 않는다 — 그건 load_returns 의 몫이다(모듈
+    docstring). 여기서는 입력을 그대로 믿고 병합·차감만 한다. ret_h0/h1/
+    h5 가 얼마나 크든(예: 연속 상한가로 누적 h5 가 70% 든) 그대로 쓴다.
+
     반환하는 프레임은 excess_h0/h1/h5 중 «일부만» NaN 일 수 있다 — 예를
-    들어 D+4 에 분할이 나면 h5 만 못 믿을 뿐 h0/h1 은 이미 실현되어
-    유효하다. 같은 진입을 공유한다고 해서 다른 horizon 까지 같이 버리지
-    않는다. Task 7 은 이 프레임을 «컬럼 단위» 로 다뤄야 한다 — 행 단위로
-    dropna 하면 멀쩡한 h0/h1 까지 잃는다.
+    들어 load_returns 가 넘겨준 rets 에 D+4 이후 가격이 아직 없어 h5 만
+    없는 경우다. 같은 진입을 공유한다고 해서 다른 horizon 까지 같이
+    버리지 않는다. Task 7 은 이 프레임을 «컬럼 단위» 로 다뤄야 한다 —
+    행 단위로 dropna 하면 멀쩡한 다른 horizon 까지 잃는다.
     """
     if signals.empty or rets.empty:
         return pd.DataFrame()
@@ -115,15 +137,6 @@ def attach_returns(signals: pd.DataFrame, rets: pd.DataFrame) -> pd.DataFrame:
         col = f"ret_h{h}"
         if col not in df.columns:
             continue
-        if h != 0:
-            # 기업행위는 load_returns 가 이미 뺐지만, 직접 만든 표로 부를
-            # 수도 있다. 이 horizon 만 못 믿는 것이니 이 컬럼만 null 처리
-            # 한다 — 다른 horizon 을 같이 버리면 실현된 유효한 수익까지
-            # 잃는다(위 참고). h0(시가 대 종가)에는 걸지 않는다 — ±30%
-            # 는 «종가 대 전일종가» 규칙이라 h0 에는 적용 대상이 아니고,
-            # 여기서 걸면 load_returns 에서 뺀(모듈 docstring) 상한가·
-            # 하한가 세션의 ret_h0 를 이 안전망이 다시 지워버린다.
-            df.loc[df[col].abs() > CORPORATE_ACTION_LIMIT, col] = None
         grp = df.groupby(["trade_date", "window_kind"])[col]
         df[f"excess_h{h}"] = df[col] - grp.transform("mean")
 
