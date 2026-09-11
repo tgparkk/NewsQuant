@@ -33,6 +33,10 @@ class TradingAnalyzer:
         # 새로 만드는 백테스트에서는 첫날 캐시가 내내 재사용된다.
         self._volume_cache: Dict = {}
         self._volume_cache_loaded: bool = False
+        # 캐시를 만들 때 쓴 as_of. 다른 as_of 로 다시 부르면 캐시가 낡은
+        # 것이므로 반드시 다시 읽는다 — _load_volume_cache 참고.
+        self._volume_cache_as_of: Optional[datetime] = None
+        self._as_of: Optional[datetime] = None
 
     def analyze_today_stocks(self) -> Dict:
         """
@@ -428,9 +432,15 @@ class TradingAnalyzer:
 
         as_of 를 주면 그 시점 «이전» 뉴스만 센다. 주지 않으면 예전처럼
         전체를 읽고 최근 날짜 1개를 버린다(생산 경로).
+
+        캐시는 그것을 만들 때 쓴 as_of 로 키를 매긴다. 요청받은 as_of 가
+        캐시를 만든 as_of 와 다르면 무조건 다시 읽는다 — 낡은 기준선을
+        그대로 쓰면 그 자체가 미래(혹은 과거) 참조가 된다.
         """
-        if self._volume_cache_loaded:
+        if self._volume_cache_loaded and self._volume_cache_as_of == as_of:
             return
+
+        self._volume_cache = {}
 
         try:
             conn = self.db.get_connection()
@@ -463,21 +473,23 @@ class TradingAnalyzer:
                         stock_daily[code][d_str] += 1
 
             # 종목별 일평균 (최근 20일)
-            # 생산 경로는 오늘자가 섞여 있으므로 최근 1일을 버린다.
-            # as_of 경로는 쿼리에서 이미 잘렸으므로 버리면 안 된다.
-            skip = 0 if as_of is not None else 1
+            # 두 경로 모두 최근 날짜 1개(생산: 오늘자, as_of: as_of 시각까지만
+            # 걸쳐 있어 하루치가 채 안 되는 토막)를 버리고, 그 앞의 완전한
+            # 20일을 평균한다 — 그래야 백테스트가 생산과 같은 시그널을 본다.
             for code, daily in stock_daily.items():
                 dates = sorted(daily.keys(), reverse=True)
-                if len(dates) <= skip:
+                if len(dates) <= 1:
                     self._volume_cache[code] = 0
                 else:
-                    counts = [daily[d] for d in dates[skip:skip + 20]]
+                    counts = [daily[d] for d in dates[1:21]]
                     self._volume_cache[code] = sum(counts) / len(counts) if counts else 0
 
             self._volume_cache_loaded = True
+            self._volume_cache_as_of = as_of
         except Exception as e:
             logger.warning(f"볼륨 캐시 로드 실패: {e}")
             self._volume_cache_loaded = True  # 실패해도 재시도 방지
+            self._volume_cache_as_of = as_of
 
     def _volume_signal(self, stock_code: str, today_count: int) -> float:
         """
@@ -490,7 +502,7 @@ class TradingAnalyzer:
         Returns:
             볼륨 시그널 점수 (-0.5 ~ +0.1)
         """
-        self._load_volume_cache(getattr(self, "_as_of", None))
+        self._load_volume_cache(self._as_of)
 
         avg_count = self._volume_cache.get(stock_code, 0)
         if avg_count <= 0:

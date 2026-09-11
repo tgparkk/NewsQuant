@@ -74,16 +74,71 @@ def test_볼륨_캐시가_인스턴스마다_따로다(db):
 
 
 def test_볼륨_기준선이_as_of_이전_뉴스만_쓴다(db):
-    """as_of 이후 뉴스로 기준선을 만들면 미래 참조다."""
+    """as_of 이후 뉴스로 기준선을 만들면 미래 참조다.
+
+    같은 인스턴스에서 다른 as_of 로 다시 부른다 — 캐시가 첫 as_of 에
+    눌어붙으면(수정 전 버그) 두 번째 호출도 첫 기준선을 그대로 돌려주므로
+    이 테스트가 잡아낸다.
+    """
     a = TradingAnalyzer(price_fetcher=FakePriceFetcher())
 
     a._load_volume_cache(as_of=datetime(2026, 3, 2))
     early = dict(a._volume_cache)
 
-    b = TradingAnalyzer(price_fetcher=FakePriceFetcher())
-    b._load_volume_cache(as_of=datetime(2026, 9, 1))
+    a._load_volume_cache(as_of=datetime(2026, 9, 1))
+    late = dict(a._volume_cache)
 
-    assert early != b._volume_cache
+    assert early != late
+
+
+def test_세_건의_평균이_정확하다(db):
+    """골든은 종목마다 뉴스가 1건뿐이라 평균 계산 자체가 검증되지 않는다.
+
+    직접 만든 3건으로 avg_sentiment·avg_overall 이 진짜 평균인지 본다.
+    """
+    a = TradingAnalyzer(price_fetcher=FakePriceFetcher())
+    rows = [
+        _news("n1", datetime(2026, 6, 15, 8, 0), "005930", 0.2, 0.1),
+        _news("n2", datetime(2026, 6, 15, 8, 10), "005930", 0.4, 0.3),
+        _news("n3", datetime(2026, 6, 15, 8, 20), "005930", 0.6, 0.5),
+    ]
+
+    result = a.analyze_stocks(rows, as_of=datetime(2026, 6, 15, 9, 0))
+
+    stats = {s["stock_code"]: s for s in result["stock_stats"]}
+    assert stats["005930"]["news_count"] == 3
+    assert stats["005930"]["avg_sentiment"] == pytest.approx((0.2 + 0.4 + 0.6) / 3)
+    assert stats["005930"]["avg_overall"] == pytest.approx((0.1 + 0.3 + 0.5) / 3)
+
+
+def test_related_stocks_콤마로_여러_종목에_뉴스_한_건씩_붙는다(db):
+    """골든에는 콤마로 여러 종목을 문 뉴스가 한 건도 없어 이 분기가 안 지나갔다."""
+    a = TradingAnalyzer(price_fetcher=FakePriceFetcher())
+    rows = [_news("n1", datetime(2026, 6, 15, 8, 0), "005930,000660", 0.5, 0.5)]
+
+    result = a.analyze_stocks(rows, as_of=datetime(2026, 6, 15, 9, 0))
+
+    stats = {s["stock_code"]: s for s in result["stock_stats"]}
+    assert stats["005930"]["news_count"] == 1
+    assert stats["000660"]["news_count"] == 1
+
+
+def test_긍부정중립_카운트와_비율이_정확하다(db):
+    """positive_count·negative_count·neutral_count·positive_ratio 를 손으로 검증한다."""
+    a = TradingAnalyzer(price_fetcher=FakePriceFetcher())
+    rows = [
+        _news("n1", datetime(2026, 6, 15, 8, 0), "005930", 0.5, 0.5),
+        _news("n2", datetime(2026, 6, 15, 8, 10), "005930", -0.3, 0.2),
+        _news("n3", datetime(2026, 6, 15, 8, 20), "005930", 0.0, 0.1),
+    ]
+
+    result = a.analyze_stocks(rows, as_of=datetime(2026, 6, 15, 9, 0))
+
+    stats = {s["stock_code"]: s for s in result["stock_stats"]}["005930"]
+    assert stats["positive_count"] == 1
+    assert stats["negative_count"] == 1
+    assert stats["neutral_count"] == 1
+    assert stats["positive_ratio"] == pytest.approx(1 / 3)
 
 
 PURE_FIELDS = ("news_count", "avg_sentiment", "avg_overall",
