@@ -33,7 +33,9 @@ class PriceFetcher:
             try:
                 # lxml이 설치되어 있지 않을 경우를 대비해 html5lib 또는 html.parser 사용
                 # 여기서는 requests로 텍스트를 먼저 가져옴
-                response = requests.get(url, headers=self.HEADERS)
+                # timeout 필수 - 신호원장 잡이 스냅샷마다 수백 종목을 순차 조회한다.
+                # 없으면 멈춘 연결 하나가 스케줄러 워커를 영구 점유한다.
+                response = requests.get(url, headers=self.HEADERS, timeout=(3, 5))
                 if response.status_code != 200:
                     logger.error(f"주가 수집 실패: {stock_code}, HTTP {response.status_code}")
                     continue
