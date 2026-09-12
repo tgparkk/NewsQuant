@@ -177,8 +177,11 @@ STOCK_NAME_TO_CODE_BASE = {
 #   2. ETF/ETN 390개 — 개별 종목 신호의 대상이 아니다.
 #   3. 6자리 숫자가 아닌 코드 - 'CPNG'(미국 상장), '00104K'(전환우선주).
 #
-# 생성기도 같은 커밋에서 고쳤지만, 이미 커밋된 stock_codes_extended.py 를
-# 네트워크 없이 쓰려면 로드 시점에도 한 번 걷어내야 한다.
+# 2026-09-12 출처를 DB 의 stock_info 로 바꾸면서 원인 자체가 사라졌다 —
+# scripts/build_stock_dict.py 는 정식 종목명을 그대로 옮기고 별칭을 만들지
+# 않는다. 그래도 정화는 남겨 둔다. 산출물이 다시 다른 출처로 바뀌거나 손으로
+# 고쳐질 때의 방어선이고, 지금 산출물에서는 «아무것도 걷어내지 않는다»는 것을
+# tests/test_build_stock_dict.py 가 고정한다.
 #
 # 손으로 적은 STOCK_NAME_TO_CODE_BASE 에는 적용하지 않는다. 'POSCO'(005490),
 # 'LG'(003550), 'SK'(034730) 처럼 절단 별칭과 «형태가 같지만» 정식 종목명인
@@ -333,6 +336,34 @@ _NAME_BOUNDARY = (
 )
 
 
+# ---------------------------------------------------------------------------
+# 일상어와 겹치는 종목명 — 단독 등장만으로는 잡지 않는다.
+#
+# 사전을 stock_info 로 바꾸면서 들어온 이름들이다. 전부 진짜 상장사지만
+# 기사에서는 대개 회사를 가리키지 않는다. 같은 본문 4,000건에 구·신 사전을
+# 돌려 비교한 결과, 추가된 매칭 583건 중 384건이 '대상' 하나였고 표본은 전부
+# "고객을 대상으로" 류였다.
+#
+# 사전에서 빼지는 «않는다» — 코드가 붙거나(규칙1·2) 종목 키워드가 따라붙으면
+# (규칙5) 그대로 잡는다. 끄는 것은 단독 등장(규칙3)뿐이다.
+# 항목마다 근거 문장을 tests/test_ambiguous_names.py 에 고정해 둔다.
+# ---------------------------------------------------------------------------
+AMBIGUOUS_NAMES = frozenset({
+    '대상',        # "고객을 대상으로"
+    'NEW',         # "JIANGSU NEW YANGZI", "2026년 NEW 정책"
+    'DSR',         # "총부채원리금상환비율(DSR) 규제"
+    '코디',        # "출근룩 코디"
+    '전방',        # "전방 산업", "전방 충돌방지"
+    '흥국',        # "흥국證"·"흥국화재" 는 흥국(010240) 과 다른 회사다
+    '삼기',        # "교두보로 삼기 위해"
+    '노브랜드',    # 신세계 PB 브랜드 쪽으로 더 많이 쓰인다
+    '태양',        # "가수 태양"
+    '하츠',        # "헤일로 하츠 컬렉션"
+    '엔케이',      # "셀루닉 엔케이 액티베이터"
+    '미래산업',    # "미래산업 전략 심포지엄" — 일반명사구로 더 자주 쓰인다
+})
+
+
 class _StockPatterns(NamedTuple):
     """종목 하나에 대해 미리 컴파일해 둔 패턴 묶음."""
     code: str
@@ -341,6 +372,7 @@ class _StockPatterns(NamedTuple):
     code_then_name: 're.Pattern'        # "005930 삼성전자"
     standalone: 're.Pattern'            # 앞뒤가 공백/문장부호인 "삼성전자"
     with_keyword: tuple                 # "삼성전자 주가" 등
+    ambiguous: bool                     # 일상어와 겹쳐 단독 등장을 못 믿는 이름
 
 
 _STOCK_PATTERN_CACHE: Optional[Dict[str, _StockPatterns]] = None
@@ -373,10 +405,15 @@ def _stock_patterns() -> Dict[str, _StockPatterns]:
             # "하나증권"이 '하나'+'증권' 으로 쪼개져 하나제약(293480) 이 되고
             # "대상기업"·"매일주가"도 전부 걸린다. 실제 합성어를 종목명+키워드로
             # 오인하지 않으면서 "삼성전자(주가 5만원)" 은 그대로 잡는다.
+            # 앞쪽 경계를 요구한다 — 없으면 "신흥국 증권"이 흥국(010240) 이 된다.
             with_keyword=tuple(
-                re.compile(escaped + r'[\s(（]+' + kw, re.IGNORECASE)
+                re.compile(
+                    r'(?<!' + _NAME_CHAR + r')' + escaped + r'[\s(（]+' + kw,
+                    re.IGNORECASE,
+                )
                 for kw in TITLE_KEYWORDS
             ),
+            ambiguous=stock_name in AMBIGUOUS_NAMES,
         )
 
     _STOCK_PATTERN_CACHE = built
@@ -798,10 +835,17 @@ class BaseCrawler(ABC):
             codes.update(entry.code_then_name.findall(text))
 
             # 3. 종목명으로 추출 (앞뒤가 공백/문장부호/문장 경계인 경우만)
-            if entry.standalone.search(text):
+            # 일상어와 겹치는 이름은 이 규칙을 건너뛴다 — 코드나 키워드 같은
+            # 방증이 있을 때만(규칙 1·2·5) 인정한다.
+            if not entry.ambiguous and entry.standalone.search(text):
                 codes.add(stock_code)
 
             # 5. 종목명 + 키워드 패턴 ("삼성전자 주가", "삼성전자 종목")
+            # 일상어와 겹치는 이름은 여기서도 못 믿는다 — 키워드가 하필
+            # '기업'·'종목'·'주식' 이라 "관리종목 지정 대상 기업"이 그대로
+            # 통과한다. 그런 이름은 코드가 붙은 경우(규칙 1·2·4)만 남긴다.
+            if entry.ambiguous:
+                continue
             for keyword_pattern in entry.with_keyword:
                 if keyword_pattern.search(text):
                     codes.add(stock_code)
