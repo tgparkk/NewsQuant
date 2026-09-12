@@ -105,3 +105,19 @@ def test_stock_info_에서_상장종목을_읽어온다(db):
     assert mapping["컴투스"] == "078340"
     assert mapping["대상"] == "001680"
     assert mapping["골프존"] == "215000"
+# --------------------------------------------------------------------------
+# 로드 시점 정화는 방어선으로 남는다 — 새 산출물에서는 할 일이 없어야 한다
+# --------------------------------------------------------------------------
+
+def test_로드_정화가_새_산출물에서는_아무것도_걷어내지_않는다():
+    """정화 로직은 구 네이버 생성기의 쓰레기(절단 별칭·ETF·비표준 코드)를
+
+    걷어내려고 넣은 것이다. stock_info 산출물에는 그런 게 없어야 한다.
+    여기서 무언가 걸리기 시작하면 출처나 생성기가 조용히 바뀐 것이다.
+    """
+    from stock_codes_extended import EXTENDED_STOCK_CODES
+    from news_scraper.base_crawler import _sanitize_generated_dict
+
+    removed = set(EXTENDED_STOCK_CODES) - set(_sanitize_generated_dict(EXTENDED_STOCK_CODES))
+
+    assert not removed, f"정화가 {len(removed)}개를 걷어냈다: {sorted(removed)[:10]}"
