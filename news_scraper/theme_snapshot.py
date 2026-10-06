@@ -122,6 +122,15 @@ def parse_theme_detail(
         {"stock_code": c, "stock_name": names.get(c), "reason": reasons.get(c)}
         for c in sorted(set(names) | set(reasons))
     ]
+
+    # 장 전(PREOPEN)에는 groupInfo 의 종목 수·등락률·상승/하락/보합 수가 0 으로 비어 온다(2026-10-06 08:00 실측).
+    # 같은 시각 목록 값도 일부 테마만 비어 믿을 수 없다 → 지표는 NULL, 종목 수만 최상위 totalCount 로 채운다.
+    n_total = _int_or_none(first.get("totalCount")) or len(members)
+    reset = group.get("no") is not None and group.get("totalCount") == 0 and n_total > 0
+    if reset:
+        row.update(member_count=n_total, change_rate=None,
+                   rise_count=None, fall_count=None, steady_count=None)
+    row["metrics_reset"] = reset
     return row, members, mismatch
 
 
@@ -197,6 +206,7 @@ class SnapshotResult:
     n_inserted_members: int = 0
     n_mismatch_themes: int = 0
     n_mismatch_codes: int = 0
+    n_reset_themes: int = 0
     n_errors: int = 0
     market_status: Optional[str] = None
     note: str = ""
@@ -405,6 +415,8 @@ def run_snapshot(
                     res.n_mismatch_codes += td.mismatch
                     logger.warning("테마 %s: stocks[] 와 themeItemInfoMap 어긋남 %d건",
                                    td.row["theme_no"], td.mismatch)
+                if td.row.get("metrics_reset"):
+                    res.n_reset_themes += 1
                 if store:
                     try:
                         nt, nm = store.insert_theme(snap_date, res.run_id, td)
@@ -430,6 +442,8 @@ def run_snapshot(
             notes.append(f"이번 실행이 넣은 행: theme_daily {res.n_inserted_themes} · theme_member_daily {res.n_inserted_members}")
         if res.n_mismatch_themes:
             notes.append(f"stocks/map 어긋남 {res.n_mismatch_themes}테마 {res.n_mismatch_codes}종목")
+        if res.n_reset_themes:
+            notes.append(f"장 전 초기화 {res.n_reset_themes}테마 — 등락률·상승/하락/보합 수 NULL")
         if res.errors:
             notes.append("오류: " + " | ".join(res.errors[:5]) + (" ..." if len(res.errors) > 5 else ""))
         if not dry_run and raw["list_pages"]:

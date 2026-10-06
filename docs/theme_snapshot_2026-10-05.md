@@ -90,3 +90,12 @@ COMMIT;
 - NewsQuant 라이브 폴더(`D:/GIT/NewsQuant`)는 수집기가 돌고 있어 브랜치 전환 금지 → 워크트리 `D:/tmp/nq-wt-theme-snapshot` · 브랜치 `feat/theme-snapshot`(base `542884f`).
 - executor sonnet 1(≤35만) + verifier sonnet 1(≤20만) + 관리자 ≈10만 = **≈65만**(상한 70만 안).
 - 순서: 승인 → 구현·테스트 → DDL 실행(오늘 휴장·20시 이후라 오늘 밤 가능) → 첫 수집 = 오늘 밤 수동 1회(10-05 기록 확보) → 작업 스케줄러 등록 → 커밋은 브랜치 · push·main 머지는 사장님 확인.
+
+## 8. 운영 기록
+- **2026-10-05** 실행 시각을 18:10 → **매일 08:00**으로 바꿔 등록(장 전에 알 수 있던 소속을 남기려는 목적 · PC 가 저녁에 꺼지는 날이 있음). 첫 수동 run 10-05 20:57 ok.
+- **2026-10-06 08:00 run 에서 지표 0 발견.** 장 전(PREOPEN)에는 상세 API `groupInfo` 의 totalCount·changeRate·rise/fall/steadyCount 가 모두 0 으로 비어 온다.
+  같은 시각 목록 API 도 일부 테마만 0 으로 비어(등락률 0 = 64테마 · totalCount 합 5,163) 대체값으로 쓸 수 없다. 상세 최상위 `totalCount` 는 정상.
+  - 수정: `groupInfo.totalCount == 0` 인데 테마에 종목이 있으면 «장 전 초기화»로 보고 `member_count` = 상세 최상위 totalCount, 등락률·상승/하락/보합 수 = **NULL**. run note 에 «장 전 초기화 N테마» 기록.
+  - 10-06 행 264개는 원본 gz 를 고친 파서로 다시 읽어 1회 보정(UPDATE · PIT «덮어쓰기 0»의 예외 · 사장님 승인). run 2 note 에 보정 사실 기록.
+  - 결과: 08:00 실행에서는 `theme_daily` 의 등락률·상승/하락/보합 칸이 매일 NULL 이다. 테마 열기는 소속(`theme_member_daily`) + `daily_prices` 로 계산한다(SSOT 원칙과 같음).
+- 장 전에는 큰 테마(예: 27)의 상세 2쪽 `stocks[]` 가 덜 내려와 종목명이 빈 행이 생길 수 있다(10-06: 5행). 사유와 소속은 `themeItemInfoMap` 기준이라 빠지지 않는다.

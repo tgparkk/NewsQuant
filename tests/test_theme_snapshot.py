@@ -80,6 +80,32 @@ def test_detail_falls_back_to_list_row():
     assert row["theme_no"] == 586 and row["theme_name"] == "x"
 
 
+# 실제 2026-10-06 08:00(PREOPEN) 응답: groupInfo 가 0 으로 비어 있고 최상위 totalCount=15 는 살아 있다.
+# 같은 시각 목록 행은 전 거래일 값(9.38)이지만 다른 테마는 0 으로 비어 있어 믿을 수 없다.
+PREOPEN_LIST_ROW = {"theme_no": 586, "theme_name": "광통신(광케이블/광섬유 등)", "member_count": 15,
+                    "change_rate": Decimal("9.38"), "rise_count": 15, "fall_count": 0, "steady_count": 0}
+
+
+def test_detail_preopen_reset_metrics_are_null():
+    d = _load("th_586_preopen.json")
+    assert d["marketStatus"] == "PREOPEN" and d["groupInfo"]["totalCount"] == 0
+    row, members, _ = ts.parse_theme_detail([d], PREOPEN_LIST_ROW)
+    assert row["member_count"] == 15
+    assert row["change_rate"] is None
+    assert row["rise_count"] is None and row["fall_count"] is None and row["steady_count"] is None
+    assert row["metrics_reset"] is True
+    assert row["theme_name"] and row["description"] and len(members) == 15
+
+
+def test_detail_real_flat_theme_keeps_zero():
+    d = _load("th_586.json")
+    d["groupInfo"] = dict(d["groupInfo"], changeRate="0.00", riseCount=0, fallCount=0, steadyCount=15)
+    row, _, _ = ts.parse_theme_detail([d])
+    assert row["change_rate"] == Decimal("0.00")
+    assert row["steady_count"] == 15 and row["member_count"] == 15
+    assert row["metrics_reset"] is False
+
+
 # ── KST 경계 ──
 def test_snap_date_kst_boundary():
     assert ts.kst_snap_date(datetime(2026, 10, 5, 15, 30, tzinfo=timezone.utc)) == date(2026, 10, 6)
@@ -171,6 +197,27 @@ def test_write_path_counts_and_archive(tmp_path):
                            archive_dir=str(tmp_path), now=NOW)
     assert (tmp_path / "2026" / "2026-10-05.run7.json.gz").exists()
     assert path.exists() and res2.archive_path.endswith("run7.json.gz")
+
+
+def test_preopen_run_notes_null_metrics(tmp_path):
+    class PreopenClient(FakeClient):
+        def get_json(self, url):
+            if "/theme?" in url:
+                return super().get_json(url)
+            no = int(url.split("/theme/")[1].split("?")[0])
+            d = _load("th_586_preopen.json")
+            d["groupInfo"] = dict(d["groupInfo"], no=no)
+            return d, NOW
+
+    conn, cur = _mock_conn()
+    res = ts.run_snapshot(conn, limit_themes=2, client=PreopenClient(),
+                          archive_dir=str(tmp_path), now=NOW)
+    assert res.status == "ok"
+    assert "장 전 초기화 2테마" in res.note
+    theme_params = [c.args[1] for c in cur.execute.call_args_list if "INSERT INTO theme_daily" in c.args[0]]
+    assert len(theme_params) == 2
+    # (snap_date, theme_no, name, description, member_count, change_rate, rise, fall, steady, fetched_at, run_id)
+    assert all(p[4] == 15 and p[5:9] == (None, None, None, None) for p in theme_params)
 
 
 def test_partial_on_theme_failure(tmp_path):

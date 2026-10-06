@@ -69,6 +69,7 @@ def main(argv=None) -> int:
     print(f"  테마 수(관측)={res.n_themes} (목록 totalCount={res.total_count_expected})")
     print(f"  멤버 수(관측)={res.n_members}")
     print(f"  stocks/map 어긋남 = {res.n_mismatch_themes}테마 · {res.n_mismatch_codes}종목")
+    print(f"  장 전 초기화(지표 NULL) = {res.n_reset_themes}테마")
     print(f"  실패 수={res.n_errors}")
     if not args.dry_run:
         print(f"  넣은 행: theme_daily {res.n_inserted_themes} · theme_member_daily {res.n_inserted_members}")
