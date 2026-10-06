@@ -97,6 +97,13 @@ def test_detail_preopen_reset_metrics_are_null():
     assert row["theme_name"] and row["description"] and len(members) == 15
 
 
+def test_detail_preopen_reset_when_total_is_string_zero():
+    d = _load("th_586_preopen.json")
+    d["groupInfo"] = dict(d["groupInfo"], totalCount="0")
+    row, _, _ = ts.parse_theme_detail([d])
+    assert row["metrics_reset"] is True and row["member_count"] == 15
+
+
 def test_detail_real_flat_theme_keeps_zero():
     d = _load("th_586.json")
     d["groupInfo"] = dict(d["groupInfo"], changeRate="0.00", riseCount=0, fallCount=0, steadyCount=15)

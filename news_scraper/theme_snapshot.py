@@ -126,7 +126,7 @@ def parse_theme_detail(
     # 장 전(PREOPEN)에는 groupInfo 의 종목 수·등락률·상승/하락/보합 수가 0 으로 비어 온다(2026-10-06 08:00 실측).
     # 같은 시각 목록 값도 일부 테마만 비어 믿을 수 없다 → 지표는 NULL, 종목 수만 최상위 totalCount 로 채운다.
     n_total = _int_or_none(first.get("totalCount")) or len(members)
-    reset = group.get("no") is not None and group.get("totalCount") == 0 and n_total > 0
+    reset = group.get("no") is not None and _int_or_none(group.get("totalCount")) == 0 and n_total > 0
     if reset:
         row.update(member_count=n_total, change_rate=None,
                    rise_count=None, fall_count=None, steady_count=None)
