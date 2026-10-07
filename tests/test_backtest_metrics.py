@@ -348,3 +348,70 @@ def test_동일점수_동점이_있으면_전역셔플과_구별된다():
     for seed in range(5):
         out = permutation_test(df, "excess_h1", n_iter=500, seed=seed)
         assert out["p_value"] > 0.2, f"seed={seed} p={out['p_value']}"
+
+
+import math
+
+from news_scraper.backtest.metrics import hac_t
+
+
+def test_hac_t는_lag0이면_단순_t와_일치한다():
+    """lag=0 이면 자기공분산 항이 없어 SE = sqrt(γ0/n), γ0 = ssd/n(모집단 분산).
+    ic_summary 의 ddof=1 표준편차와는 sqrt((n−1)/n) 배만큼 다르다."""
+    xs = [0.03, -0.01, 0.05, 0.02, 0.04]
+    n = len(xs)
+    mean = sum(xs) / n
+    ssd = sum((x - mean) ** 2 for x in xs)
+    expected = mean / (math.sqrt(ssd / n) / math.sqrt(n))
+
+    out = hac_t(pd.Series(xs), lag=0)
+
+    assert out["n_days"] == n
+    assert out["lag"] == 0
+    assert out["mean_ic"] == pytest.approx(mean)
+    assert out["t_hac"] == pytest.approx(expected)
+    assert out["se_hac"] == pytest.approx(math.sqrt(ssd / n) / math.sqrt(n))
+
+
+def test_hac_t는_양의_자기상관이면_t가_작아진다():
+    """10일씩 같은 부호가 이어지는 시계열(양의 자기상관) — 단순 SE 는 독립을
+    가정해 분산을 과소추정한다. HAC 는 γk>0 항을 더해 SE 를 키우고 |t| 를 줄인다.
+    평균이 0 이면 두 t 가 모두 0 이라 비교가 안 되므로 +0.02 를 얹는다."""
+    s = pd.Series(([0.1] * 10 + [-0.1] * 10) * 3) + 0.02
+
+    plain = hac_t(s, 0)["t_hac"]
+    hac = hac_t(s, 3)["t_hac"]
+
+    assert math.isfinite(plain) and math.isfinite(hac)
+    assert abs(hac) < abs(plain)
+
+
+def test_hac_t는_정규근사_양측_p를_돌려준다():
+    s = pd.Series([0.05, 0.01, 0.04, -0.02, 0.06, 0.03, 0.00, 0.05, 0.02, 0.04])
+
+    out = hac_t(s, 2)
+
+    assert math.isfinite(out["t_hac"])
+    assert out["p_hac"] == pytest.approx(math.erfc(abs(out["t_hac"]) / math.sqrt(2)))
+    assert 0 <= out["p_hac"] <= 1
+
+
+def test_hac_t는_빈_시계열과_상수_시계열에_NaN을_돌려준다():
+    empty = hac_t(pd.Series([], dtype=float), 2)
+    const = hac_t(pd.Series([0.1] * 5), 1)
+
+    assert empty["n_days"] == 0
+    for k in ("mean_ic", "se_hac", "t_hac", "p_hac"):
+        assert math.isnan(empty[k]), k
+    assert const["n_days"] == 5
+    assert math.isnan(const["t_hac"])   # 분산 0 → t 정의 안 됨
+    assert math.isnan(const["p_hac"])
+
+
+def test_hac_t는_n이_lag보다_작으면_NaN이다():
+    out = hac_t(pd.Series([0.01, 0.02, 0.04]), 5)
+
+    assert out["n_days"] == 3
+    assert out["lag"] == 5
+    assert math.isnan(out["t_hac"])
+    assert math.isnan(out["p_hac"])

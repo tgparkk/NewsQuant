@@ -160,3 +160,52 @@ def permutation_test(df: pd.DataFrame, ret_col: str = "excess_h1",
     return {"observed": observed,
             "p_value": (hits + 1) / (n_iter + 1),
             "n_iter": n_iter}
+
+
+def hac_t(ic: pd.Series, lag: int) -> Dict:
+    """일별 IC 시계열의 Newey-West(HAC) t 와 양측 p.
+
+    Bartlett 커널, 지연 lag:  var = γ0 + 2·Σ_{k=1..lag} (1 − k/(lag+1))·γk,
+    γk = (1/n)·Σ_t (x_t − x̄)(x_{t−k} − x̄).  SE = sqrt(var/n),  t = x̄/SE.
+    p 는 정규근사 양측: p = erfc(|t|/√2).  n 이 수백 거래일이라 충분하고,
+    새 의존성(scipy)을 더하지 않는다(모듈 docstring 원칙).
+
+    왜 순열검정 대신 이것인가: 거래일 안 순열은 횡단면 독립을 가정한다. 점수가
+    그룹 단위이고 수익에 그룹 팩터가 있으면 일별 IC 의 실제 분산은 순열 귀무분포의
+    분산보다 훨씬 크다(선행-후행 스펙 §7 개정, 2026-10-07). HAC 는 일별 IC 의
+    실측 분산과 자기상관(h1/h5 의 겹침 포함)을 그대로 쓴다.
+
+    lag=0 이면 자기공분산 항이 없어 SE = sqrt(γ0/n) 인 단순 SE 다. γ0 는 모집단
+    분산(ssd/n)이라 ic_summary 의 ddof=1 표준편차로 만든 SE 와는
+    sqrt((n−1)/n) 배만큼 다르다(t 는 그 역수 배).
+
+    반환: {"n_days", "mean_ic", "se_hac", "t_hac", "p_hac", "lag"}. n < lag+2 또는
+    var <= 0 이면 t/p 는 NaN.
+    """
+    nan = float("nan")
+    x = pd.Series(ic, dtype=float).dropna().to_numpy(dtype=float)
+    n = int(x.size)
+    out = {"n_days": n, "mean_ic": nan, "se_hac": nan,
+           "t_hac": nan, "p_hac": nan, "lag": int(lag)}
+    if n == 0:
+        return out
+
+    mean = float(x.mean())
+    out["mean_ic"] = mean
+    if n < lag + 2:
+        return out
+
+    # 값이 전부 같으면 분산은 정확히 0 이다. x − x.mean() 은 부동소수 잔차로
+    # 1e-33 같은 «양수» 분산을 만들어 터무니없는 t 를 낼 수 있어 0 으로 고정한다.
+    d = x - mean if np.ptp(x) > 0 else np.zeros_like(x)
+    var = float(d @ d) / n                                  # γ0
+    for k in range(1, lag + 1):
+        gamma_k = float(d[k:] @ d[:-k]) / n                  # γk
+        var += 2.0 * (1.0 - k / (lag + 1)) * gamma_k
+    if not var > 0:      # var <= 0 (또는 NaN) 이면 t 를 정의하지 않는다
+        return out
+
+    se = math.sqrt(var / n)
+    t = mean / se
+    out.update(se_hac=se, t_hac=t, p_hac=math.erfc(abs(t) / math.sqrt(2)))
+    return out
