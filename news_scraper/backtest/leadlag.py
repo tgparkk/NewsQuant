@@ -144,3 +144,47 @@ def build_scores(panel: pd.DataFrame, groups: pd.DataFrame, kind: str,
               .sort_values(["trade_date", "stock_code"])
               .reset_index(drop=True))
     return out
+
+
+KINDS = ("theme", "wics")
+THEME_SNAP_DATE = date(2026, 10, 7)   # 스펙 §1.3 — 소속표는 이 스냅샷 한 장으로 고정
+WICS_EXCLUDED_SECTOR = "기타"           # 스펙 §0.2 — 1,261 종목(31%), 분류 정보 없음
+
+
+def load_groups(db, kind: str, theme_snap_date: date = THEME_SNAP_DATE) -> pd.DataFrame:
+    """분류표 → (stock_code, group_id).
+
+    theme : theme_member_daily 의 snap_date=theme_snap_date 행. group_id = theme_no.
+    wics  : stock_sector 에서 sector_name='기타' 제외. group_id = sector_code.
+    둘 다 robotrader 소유 표라 읽기만 한다.
+    """
+    if kind not in KINDS:
+        raise ValueError(f"kind 는 {KINDS} 중 하나여야 한다: {kind!r}")
+
+    conn = db.get_connection()
+    try:
+        with conn.cursor() as cur:
+            if kind == "theme":
+                cur.execute("""
+                    SELECT trim(stock_code), theme_no
+                    FROM theme_member_daily
+                    WHERE snap_date = %s
+                    ORDER BY 1, 2
+                """, (theme_snap_date,))
+            else:
+                cur.execute("""
+                    SELECT trim(stock_code), sector_code
+                    FROM stock_sector
+                    WHERE sector_name IS DISTINCT FROM %s
+                      AND sector_code IS NOT NULL
+                    ORDER BY 1, 2
+                """, (WICS_EXCLUDED_SECTOR,))
+            rows = cur.fetchall()
+    finally:
+        conn.rollback()
+        db._put_connection(conn)
+
+    out = pd.DataFrame(rows, columns=["stock_code", "group_id"])
+    logger.info("load_groups(%s): %d행 · 종목 %d · 그룹 %d", kind, len(out),
+                out["stock_code"].nunique(), out["group_id"].nunique())
+    return out
