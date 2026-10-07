@@ -73,3 +73,10 @@ def load_panel(db, start: date, end: date) -> pd.DataFrame:
         db._put_connection(conn)
     raw = pd.DataFrame(rows, columns=["stock_code", "date", "open", "close", "returns_1d"])
     return clean_panel(raw)
+
+
+def next_trading_day_map(dates: Sequence[date]) -> Dict[date, date]:
+    """거래일 목록 → {D: D 의 다음 거래일}. «다음 거래일» 은 달력 +1 이 아니라
+    목록에 있는 다음 날짜다(주말·연휴 자동 건너뜀). 마지막 날짜는 키에 없다."""
+    uniq = sorted(set(dates))
+    return {d: nxt for d, nxt in zip(uniq, uniq[1:])}

@@ -8,7 +8,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from news_scraper.backtest.leadlag import PANEL_COLUMNS, clean_panel
+from news_scraper.backtest.leadlag import PANEL_COLUMNS, clean_panel, next_trading_day_map
 
 
 def _raw(rows):
@@ -54,3 +54,28 @@ def test_clean_panel은_코드를_trim_하고_중복_행을_하나만_남긴다(
 
     assert len(out) == 2
     assert list(out["stock_code"]) == ["000660", "005930"]  # (date, stock_code) 정렬
+
+
+def test_다음_거래일은_주말과_연휴를_건너뛴다():
+    """금 06-12 → 월 06-15, 화 06-16 → 목 06-18(수 휴장). 달력 +1 이 아니라
+    «패널에 있는 다음 날짜» 다."""
+    days = [date(2026, 6, 16), date(2026, 6, 12), date(2026, 6, 18), date(2026, 6, 15),
+            date(2026, 6, 15)]  # 순서 무관·중복 허용
+
+    m = next_trading_day_map(days)
+
+    assert m[date(2026, 6, 12)] == date(2026, 6, 15)
+    assert m[date(2026, 6, 15)] == date(2026, 6, 16)
+    assert m[date(2026, 6, 16)] == date(2026, 6, 18)
+
+
+def test_마지막_날짜는_다음_거래일이_없어_맵에_없다():
+    m = next_trading_day_map([date(2026, 6, 15), date(2026, 6, 16)])
+
+    assert date(2026, 6, 16) not in m
+    assert len(m) == 1
+
+
+def test_날짜가_하나거나_없으면_빈_맵이다():
+    assert next_trading_day_map([date(2026, 6, 15)]) == {}
+    assert next_trading_day_map([]) == {}
