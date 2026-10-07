@@ -12,9 +12,14 @@
 
 1. NaN/inf 지표는 "측정불가" 로 찍는다(_fmt_metric, run_news_backtest 재사용).
 2. 주 가설 arm(PRIMARY_ARM) 은 [H1] 표시와 함께 판정 줄을 따로 찍는다.
-   나머지 arm 의 순열 p 는 Holm 보정값을 나란히 찍는다(스펙 §7).
+   판정 통계량은 HAC t·p(metrics.hac_t, lag=h+1)다. 나머지 arm 의 HAC p 는
+   Holm 보정값을 나란히 찍는다. 순열 p 는 횡단면 독립을 가정해 그룹 구조에서
+   과소추정되므로 참고로만 찍는다(스펙 §7, §13 개정 1).
 3. 당일 IC(same_excess) 를 익일 IC 와 같은 줄에 둔다 — 동조화 판별표(§7).
-4. 표본(거래일 수·횡단면 중앙값·그룹표 행 수)은 실행마다 실측해 찍는다.
+4. 표본(거래일 수·횡단면 중앙값·평균·유효 그룹 수·그룹표 행 수)은 실행마다
+   실측해 찍는다.
+5. arm 세트(분류×구간)가 끝나는 대로 바로 찍는다 — 주 구간 실행은 수십 분이다.
+   --permutations 0 이면 순열검정을 통째로 건너뛴다(빠른 재실행).
 """
 import argparse
 import logging
@@ -34,6 +39,8 @@ PRIMARY_ARM = ("theme", "main", 1)          # (kind, period_name, horizon) — �
 DEFAULT_PERIOD = "main=2024-01-02:2026-10-07"
 HIT_TOP_NS = (10, 50)
 N_QUANTILES = 5
+SIG_LEVEL = 0.05          # 스펙 §7 — 통과 = HAC p < 0.05 이고 평균 IC > 0
+SAME_DAY_IC_BIG = 0.05    # 스펙 §13 — 동조화 판별표의 「당일 IC 큼」 = 당일 IC > 0.05
 
 
 def parse_period(s: str) -> Tuple[str, date, date]:
@@ -67,20 +74,30 @@ def _arm_key(kind: str, period: str, h: int) -> str:
     return f"{kind}·{period}·h{h}"
 
 
+def _cross_section_mean(df: pd.DataFrame, ret_col: str, score_col: str = "score") -> float:
+    """거래일별 유효 종목 수(횡단면 크기)의 평균 — 중앙값 옆에 나란히 찍는다."""
+    sizes = df.dropna(subset=[score_col, ret_col]).groupby("trade_date").size()
+    return float(sizes.mean()) if len(sizes) else float("nan")
+
+
 def _run_arm_set(db, kind: str, period: str, start: date, end: date,
                  n_perm: int, lines: List[str]) -> Dict[str, dict]:
-    """한 (분류, 구간) 에 대해 h0/h1/h5 를 돌리고 arm_key → 결과 dict 를 돌려준다."""
+    """한 (분류, 구간) 에 대해 h0/h1/h5 를 돌리고 arm_key → 결과 dict 를 돌려준다.
+
+    n_perm <= 0 이면 permutation_test 를 부르지 않는다(순열 p=생략)."""
     from news_scraper.backtest.leadlag import build_scores, load_groups, load_panel
-    from news_scraper.backtest.metrics import (daily_ic, hit_rate, ic_summary,
+    from news_scraper.backtest.metrics import (daily_ic, hac_t, hit_rate, ic_summary,
                                                permutation_test, quantile_returns)
     from news_scraper.backtest.returns import HORIZONS, attach_returns, load_returns
 
     groups = load_groups(db, kind)
     panel = load_panel(db, start, end)
-    scores = build_scores(panel, groups, kind=kind)
+    score_stats: dict = {}
+    scores = build_scores(panel, groups, kind=kind, stats=score_stats)
     lines.append(f"\n[{kind} · {period} {start}~{end}] 그룹표 {len(groups):,}행"
                  f"(종목 {groups['stock_code'].nunique():,} · 그룹 {groups['group_id'].nunique():,})"
-                 f" · 패널 {len(panel):,}행 · 거래일 {panel['date'].nunique()} · 점수 {len(scores):,}행")
+                 f" · 패널 {len(panel):,}행 · 거래일 {panel['date'].nunique()} · 점수 {len(scores):,}행"
+                 f" · 유효 그룹 수(일평균) {_fmt_metric(score_stats.get('valid_groups_per_day'), '.1f')}")
     if scores.empty:
         lines.append("  관측 없음")
         return {}
@@ -104,20 +121,31 @@ def _run_arm_set(db, kind: str, period: str, start: date, end: date,
             continue
         ic = daily_ic(df, score_col="score", ret_col=col)
         s = ic_summary(ic)
+        hac = hac_t(ic, lag=h + 1)     # h1/h5 수익 구간의 겹침까지 덮도록 lag = h+1 (스펙 §13)
         obs = _ic_obs_count(df, ic, score_col="score", ret_col=col)
         cs = _cross_section_stats(df, col, score_col="score")
         med = cs["median"] if cs else float("nan")
+        cs_mean = _cross_section_mean(df, col)
         hrs = {n: hit_rate(df, col, top_n=n, score_col="score") for n in HIT_TOP_NS}
-        perm = permutation_test(df, col, n_iter=n_perm, score_col="score")
+        if n_perm > 0:
+            perm = permutation_test(df, col, n_iter=n_perm, score_col="score")
+            p_perm = perm["p_value"]
+            perm_str = f"순열 p={_fmt_metric(p_perm, '.3f')} ({perm['n_iter']}회, 참고)"
+        else:
+            p_perm = float("nan")
+            perm_str = "순열 p=생략"
         key = _arm_key(kind, period, h)
         tag = " [H1]" if (kind, period, h) == PRIMARY_ARM else ""
-        results[key] = {"kind": kind, "period": period, "h": h, "summary": s,
-                        "p": perm["p_value"], "same_ic": same_s["mean_ic"], "tag": tag}
+        results[key] = {"kind": kind, "period": period, "start": start, "end": end, "h": h,
+                        "summary": s, "p_perm": p_perm, "perm_skipped": n_perm <= 0,
+                        "p_hac": hac["p_hac"], "t_hac": hac["t_hac"], "se_hac": hac["se_hac"],
+                        "lag": hac["lag"], "same_ic": same_s["mean_ic"], "tag": tag}
         hr_str = " · ".join(f"히트율top{n} {_fmt_metric(v, '.3f')}" for n, v in hrs.items())
         lines.append(f"  h{h}{tag}: 평균IC {_fmt_metric(s['mean_ic'], '+.4f')} "
-                     f"(거래일 {s['n_days']}·관측 {obs:,}·횡단면 중앙값 {_fmt_metric(med, '.0f')}) "
-                     f"· t {_fmt_metric(s['t_stat'], '+.2f')} · {hr_str} "
-                     f"· 순열 p={_fmt_metric(perm['p_value'], '.3f')} ({perm['n_iter']}회)")
+                     f"(거래일 {s['n_days']}·관측 {obs:,}·횡단면 중앙값 {_fmt_metric(med, '.0f')}"
+                     f"·평균 {_fmt_metric(cs_mean, '.0f')}) "
+                     f"· HAC t {_fmt_metric(hac['t_hac'], '+.2f')} (lag {hac['lag']}) "
+                     f"· HAC p={_fmt_metric(hac['p_hac'], '.3f')} · {hr_str} · {perm_str}")
 
     q = quantile_returns(df, "excess_h1", n_q=N_QUANTILES, score_col="score")
     if not q.empty:
@@ -130,21 +158,44 @@ def _run_arm_set(db, kind: str, period: str, start: date, end: date,
 
 
 def _verdict(primary: dict) -> str:
-    """스펙 §7 — 통과 = p<0.05 & 평균IC>0. 동조화 판별표의 읽기를 같이 적는다."""
-    s, p, same = primary["summary"], primary["p"], primary["same_ic"]
+    """스펙 §7(§13 개정 1) — 통과 = HAC p<0.05 & 평균IC>0. 동조화 판별표의 읽기를
+    같이 적는다. 당일 IC 가 작으면(≤ SAME_DAY_IC_BIG) 통과·실패와 무관하게 표의
+    마지막 행(「분류가 그룹을 못 묶는다」)으로 읽는다. 구간 범위를 같이 찍어 어느
+    실행의 판정인지 줄 하나로 알 수 있게 한다."""
+    s, p, t, same = primary["summary"], primary["p_hac"], primary["t_hac"], primary["same_ic"]
+    span = f"{primary['period']} {primary['start']}~{primary['end']}"
     if not (math.isfinite(s["mean_ic"]) and math.isfinite(p)):
-        return "H1 판정: 측정불가"
-    passed = p < 0.05 and s["mean_ic"] > 0
-    reversal = p < 0.05 and s["mean_ic"] < 0
-    if passed:
-        reading = "선행-후행 있음 → 스펙 §9 (시총 1위 변형·분류 일치 확인)"
+        return (f"H1 판정 [{span}]: 측정불가 — 평균IC {_fmt_metric(s['mean_ic'], '+.4f')}, "
+                f"HAC t {_fmt_metric(t, '+.2f')}, HAC p={_fmt_metric(p, '.3f')}")
+    passed = p < SIG_LEVEL and s["mean_ic"] > 0
+    reversal = p < SIG_LEVEL and s["mean_ic"] < 0
+    if not math.isfinite(same):
+        reading = "당일 IC 측정불가"
+    elif same <= SAME_DAY_IC_BIG:
+        reading = "당일 IC 작음 → 분류가 그룹을 못 묶는다 — 다른 분류 결과와 비교"
+    elif passed:
+        reading = "선행-후행 있음 → 스펙 §9"
     elif reversal:
-        reading = "익일 되돌림(음) → 부호 반전 활용은 별건 브레인스토밍"
+        reading = "익일 되돌림 → 별건"
     else:
-        reading = ("동조화뿐, 알파 아님 → 끝" if (math.isfinite(same) and same > 0.05)
-                   else "효과 없음(당일 IC 도 작음 → 분류가 그룹을 못 묶음)")
-    return (f"H1 판정: {'통과' if passed else '실패'} — 평균IC {s['mean_ic']:+.4f}, "
-            f"순열 p={p:.3f}, 당일 IC {_fmt_metric(same, '+.4f')} → {reading}")
+        reading = "동조화뿐, 알파 아님 → 끝"
+    return (f"H1 판정 [{span}]: {'통과' if passed else '실패'} — 평균IC {s['mean_ic']:+.4f}, "
+            f"HAC t {t:+.2f} (lag {primary['lag']}), HAC p={p:.3f}, "
+            f"당일 IC {_fmt_metric(same, '+.4f')} → {reading}")
+
+
+def _emit(lines: List[str], start: int) -> int:
+    """lines[start:] 를 바로 찍고(flush) 다음 시작 위치를 돌려준다. 파이프나
+    리다이렉트로 받아도 arm 세트가 끝나는 대로 보이게 한다."""
+    if len(lines) > start:
+        print("\n".join(lines[start:]), flush=True)
+    return len(lines)
+
+
+def _write_out(path, lines: List[str]) -> None:
+    if path:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
 
 
 def main() -> int:
@@ -167,26 +218,35 @@ def main() -> int:
 
     lines: List[str] = [f"섹터 선행-후행 백테스트 · {datetime.now():%Y-%m-%d %H:%M} · "
                         f"테마 스냅샷 {THEME_SNAP_DATE} · 순열 {args.permutations}회"]
+    printed = _emit(lines, 0)
     results: Dict[str, dict] = {}
     for name, start, end in periods:
         for kind in kinds:
             results.update(_run_arm_set(db, kind, name, start, end, args.permutations, lines))
+            printed = _emit(lines, printed)
 
     lines.append("\n" + "=" * 74)
     if not results:
         lines.append("관측 없음")
-        print("\n".join(lines))
+        _emit(lines, printed)
+        _write_out(args.out, lines)
         return 1
 
     primary_key = _arm_key(*PRIMARY_ARM)
-    secondary = {k: v["p"] for k, v in results.items() if k != primary_key}
+    secondary = {k: v["p_hac"] for k, v in results.items() if k != primary_key}
     adj = holm_adjust(secondary)
-    lines.append("arm 표 (순열 p · Holm 보정 p — 주 가설은 보정 없음):")
+    lines.append(f"arm 표 (판정 = HAC p · Holm m={len(secondary)}: 부 가설 arm 의 HAC p 보정, "
+                 f"주 가설은 보정 없음 · 순열 p 는 참고):")
     for k, v in results.items():
         s = v["summary"]
         padj = "—(H1)" if k == primary_key else _fmt_metric(adj.get(k), ".3f")
+        pperm = "생략" if v["perm_skipped"] else _fmt_metric(v["p_perm"], ".3f")
         lines.append(f"  {k:<24} IC {_fmt_metric(s['mean_ic'], '+.4f')} "
-                     f"p {_fmt_metric(v['p'], '.3f')} Holm {padj} 당일IC {_fmt_metric(v['same_ic'], '+.4f')}")
+                     f"· HAC t {_fmt_metric(v['t_hac'], '+.2f')} "
+                     f"· HAC p {_fmt_metric(v['p_hac'], '.3f')} "
+                     f"· Holm(HAC p) {padj} "
+                     f"· 순열 p(참고) {pperm} "
+                     f"· 당일IC {_fmt_metric(v['same_ic'], '+.4f')}")
     if primary_key in results:
         lines.append(_verdict(results[primary_key]))
     else:
@@ -195,14 +255,12 @@ def main() -> int:
     lines.append("한계: 테마·WICS 소속표는 현재 스냅샷을 과거에 적용(미래 참조, 결과는 상한선) · "
                  "생존 편향(상장폐지 종목 없음) · 수정주가 부재(±30% 밖만 제거) · "
                  "h1/h5 는 «다음 관측행»(거래정지 결측 시 D+2/D+6) · 밤사이 갭 미측정 · "
-                 "일별 IC 자기상관(t 는 참고, 판정은 순열 p) · "
+                 "판정은 HAC t(Newey-West, lag=h+1) · 순열 p 는 횡단면 독립을 가정해 "
+                 "그룹 구조에서 과소추정되므로 참고만(§7 개정) · "
                  "평균IC 는 일자 가중, 히트율·분위수는 행 가중")
 
-    text = "\n".join(lines)
-    print(text)
-    if args.out:
-        with open(args.out, "w", encoding="utf-8") as f:
-            f.write(text + "\n")
+    _emit(lines, printed)
+    _write_out(args.out, lines)
     return 0
 
 

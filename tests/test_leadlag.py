@@ -283,3 +283,14 @@ def test_같은_그룹에_두_번_적힌_종목은_한_번만_센다():
     r1 = sum(others) / len(others) - m
     r2 = sum(g2) / len(g2) - m
     assert d1.loc["A", "score"] == pytest.approx((r1 + r2) / 2)  # g1 크기가 6 으로 부풀면 틀어진다
+
+
+def test_build_scores는_stats를_주면_일평균_유효_그룹_수를_채운다():
+    """g1(5)·g2(6) 둘 다 MIN_MEMBERS 이상 → D1 의 유효 그룹은 2. 점수 날짜는 D1
+    하나뿐(D2 는 다음 거래일이 없어 버린다)이라 일평균 2.0. stats 는 출력에 영향이 없다."""
+    stats = {}
+
+    s = build_scores(_two_day_panel(), _groups(GROUPS), kind="theme", stats=stats)
+
+    assert stats["valid_groups_per_day"] == pytest.approx(2.0)
+    pd.testing.assert_frame_equal(s, build_scores(_two_day_panel(), _groups(GROUPS), kind="theme"))

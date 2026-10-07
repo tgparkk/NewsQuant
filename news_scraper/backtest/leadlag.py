@@ -13,7 +13,7 @@
 """
 import logging
 from datetime import date
-from typing import Dict, Sequence
+from typing import Dict, Optional, Sequence
 
 import pandas as pd
 
@@ -91,16 +91,23 @@ def _empty_scores() -> pd.DataFrame:
 
 
 def build_scores(panel: pd.DataFrame, groups: pd.DataFrame, kind: str,
-                 min_members: int = MIN_MEMBERS) -> pd.DataFrame:
+                 min_members: int = MIN_MEMBERS,
+                 stats: Optional[dict] = None) -> pd.DataFrame:
     """패널 + 그룹표 → 종목 점수 프레임 S (스펙 §4.2~4.5).
 
     panel  : (date, stock_code, ret)  — clean_panel 출력
     groups : (stock_code, group_id)   — 다중 소속 허용
     kind   : "theme" | "wics"         — window_kind 에 그대로 들어간다
+    stats  : 주면 {"valid_groups_per_day": float} 를 채운다 — 점수 날짜(score_date)
+             마다 n_g >= min_members 인 서로 다른 group_id 수의 평균(스펙 §6
+             「유효 그룹 수」). 점수가 없으면 NaN. 반환 프레임은 바뀌지 않는다 —
+             출력 계약을 그대로 두고 실행기에 표본 정보만 넘기려는 옵션이다.
 
     자기 제외 평균은 합과 개수로 구한다: (sum_g − r_i)/(n_g − 1). 그룹 크기
     n_g 는 «그날 패널에 있는» 멤버 수다(그룹표에만 있는 종목은 세지 않는다).
     """
+    if stats is not None:
+        stats["valid_groups_per_day"] = float("nan")
     if panel.empty or groups.empty:
         return _empty_scores()
 
@@ -143,6 +150,10 @@ def build_scores(panel: pd.DataFrame, groups: pd.DataFrame, kind: str,
     out = (out[list(SCORE_COLUMNS)]
               .sort_values(["trade_date", "stock_code"])
               .reset_index(drop=True))
+    if stats is not None and not out.empty:
+        valid = agg[agg["g_n"] >= min_members]
+        per_day = valid.groupby("date")["group_id"].nunique()
+        stats["valid_groups_per_day"] = float(per_day.reindex(out["score_date"].unique()).mean())
     return out
 
 
