@@ -80,3 +80,67 @@ def next_trading_day_map(dates: Sequence[date]) -> Dict[date, date]:
     목록에 있는 다음 날짜다(주말·연휴 자동 건너뜀). 마지막 날짜는 키에 없다."""
     uniq = sorted(set(dates))
     return {d: nxt for d, nxt in zip(uniq, uniq[1:])}
+
+
+MIN_MEMBERS = 5
+SCORE_COLUMNS = ("score_date", "trade_date", "stock_code", "window_kind", "score", "same_excess")
+
+
+def _empty_scores() -> pd.DataFrame:
+    return pd.DataFrame(columns=list(SCORE_COLUMNS))
+
+
+def build_scores(panel: pd.DataFrame, groups: pd.DataFrame, kind: str,
+                 min_members: int = MIN_MEMBERS) -> pd.DataFrame:
+    """패널 + 그룹표 → 종목 점수 프레임 S (스펙 §4.2~4.5).
+
+    panel  : (date, stock_code, ret)  — clean_panel 출력
+    groups : (stock_code, group_id)   — 다중 소속 허용
+    kind   : "theme" | "wics"         — window_kind 에 그대로 들어간다
+
+    자기 제외 평균은 합과 개수로 구한다: (sum_g − r_i)/(n_g − 1). 그룹 크기
+    n_g 는 «그날 패널에 있는» 멤버 수다(그룹표에만 있는 종목은 세지 않는다).
+    """
+    if panel.empty or groups.empty:
+        return _empty_scores()
+
+    g = groups.copy()
+    g["stock_code"] = g["stock_code"].astype(str).str.strip()
+    g = g.drop_duplicates(subset=["stock_code", "group_id"])
+
+    # 시장 평균 m(D): 분류 유무와 무관하게 그날 패널 전체.
+    market = panel.groupby("date")["ret"].mean().rename("m")
+
+    mem = panel.merge(g, on="stock_code", how="inner")
+    if mem.empty:
+        return _empty_scores()
+
+    agg = (mem.groupby(["date", "group_id"])["ret"]
+              .agg(g_sum="sum", g_n="size").reset_index())
+    mem = mem.merge(agg, on=["date", "group_id"], how="left")
+    mem = mem[mem["g_n"] >= min_members]
+    if mem.empty:
+        return _empty_scores()
+
+    mem["loo"] = (mem["g_sum"] - mem["ret"]) / (mem["g_n"] - 1)
+    mem = mem.merge(market, left_on="date", right_index=True, how="left")
+    mem["resid"] = mem["loo"] - mem["m"]
+
+    score = (mem.groupby(["date", "stock_code"])["resid"].mean()
+                .rename("score").reset_index())
+
+    same = panel.merge(market, left_on="date", right_index=True, how="left")
+    same["same_excess"] = same["ret"] - same["m"]
+    score = score.merge(same[["date", "stock_code", "same_excess"]],
+                        on=["date", "stock_code"], how="left")
+
+    nxt = next_trading_day_map(panel["date"].unique())
+    score["trade_date"] = score["date"].map(nxt)
+    score = score[score["trade_date"].notna()]
+
+    out = score.rename(columns={"date": "score_date"})
+    out["window_kind"] = kind
+    out = (out[list(SCORE_COLUMNS)]
+              .sort_values(["trade_date", "stock_code"])
+              .reset_index(drop=True))
+    return out
