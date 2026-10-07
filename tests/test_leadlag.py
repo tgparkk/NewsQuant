@@ -200,3 +200,86 @@ def test_입력이_비면_빈_프레임을_같은_컬럼으로_돌려준다():
 
     assert a.empty and list(a.columns) == list(SCORE_COLUMNS)
     assert b.empty and list(b.columns) == list(SCORE_COLUMNS)
+
+
+from news_scraper.backtest.metrics import daily_ic
+from news_scraper.backtest.returns import attach_returns
+
+
+def test_trade_date는_다음_거래일이다():
+    """D1(월) 점수 → trade_date D2(화). 금→월·연휴는 next_trading_day_map 테스트가 고정."""
+    s = build_scores(_two_day_panel(), _groups(GROUPS), kind="theme")
+    d1 = s[s["score_date"] == D1]
+
+    assert set(d1["trade_date"]) == {D2}
+
+
+def test_마지막_날짜의_점수는_버린다():
+    s = build_scores(_two_day_panel(), _groups(GROUPS), kind="theme")
+
+    assert D2 not in set(s["score_date"])
+    assert s["trade_date"].notna().all()
+
+
+def test_출력은_trade_date_stock_code_순으로_정렬돼_재현된다():
+    """quantile_returns 의 qcut 은 동점을 입력 순서로 끊으므로 S 의 순서가 결정적이어야 한다."""
+    s = build_scores(_two_day_panel(), _groups(GROUPS), kind="theme")
+    expected = s.sort_values(["trade_date", "stock_code"]).reset_index(drop=True)
+
+    pd.testing.assert_frame_equal(s, expected)
+
+
+def test_attach_returns와_daily_ic에_그대로_들어간다():
+    """통합(스펙 §10-8). rets 는 load_returns 모양으로 손으로 만든다.
+    D2 진입 수익을 D1 점수 순서와 같게 주면 excess_h1 IC 가 +1 이다."""
+    s = build_scores(_two_day_panel(), _groups(GROUPS), kind="theme")
+    ranked = s.sort_values("score").reset_index(drop=True)
+    rets = pd.DataFrame({
+        "trade_date": [D2] * len(ranked),
+        "stock_code": ranked["stock_code"],
+        "ret_h0": [0.001 * i for i in range(len(ranked))],
+        "ret_h1": [0.002 * i for i in range(len(ranked))],
+        "ret_h5": [float("nan")] * len(ranked),
+    })
+
+    df = attach_returns(s, rets)
+
+    assert "excess_h1" in df.columns
+    assert len(df) == len(s)
+    assert df["excess_h1"].notna().all()
+    assert df["excess_h5"].isna().all()  # 일부 horizon 만 NaN 이어도 행을 잃지 않는다
+    ic = daily_ic(df, score_col="score", ret_col="excess_h1")
+    assert list(ic.index) == [D2]
+    assert ic.iloc[0] == pytest.approx(1.0)
+    same = daily_ic(df, score_col="score", ret_col="same_excess")
+    assert len(same) == 1  # 대조군 IC 도 같은 프레임에서 바로 나온다
+
+
+def test_시장_평균은_날짜별로_따로_계산된다():
+    """D2 의 수익을 D1 과 다르게 주면, D1 점수는 D1 만의 m(D1) 으로 계산돼야 한다.
+    전체 구간을 하나로 풀링한 m 을 쓰면(미래 참조) 값이 달라진다."""
+    rets_d2 = {c: v + 0.05 for c, v in RETS_D1.items()}  # 전부 +5%p → 풀링 m 이 커진다
+    panel = pd.concat([_panel(D1, RETS_D1), _panel(D2, rets_d2)], ignore_index=True)
+
+    s = build_scores(panel, _groups(GROUPS), kind="theme")
+    d1 = s[s["score_date"] == D1].set_index("stock_code")
+
+    m_d1 = sum(RETS_D1.values()) / len(RETS_D1)
+    others = [RETS_D1[c] for c in GROUPS["g1"] if c != "B"]
+    assert d1.loc["B", "score"] == pytest.approx(sum(others) / len(others) - m_d1)
+    assert d1.loc["A", "same_excess"] == pytest.approx(0.10 - m_d1)
+
+
+def test_같은_그룹에_두_번_적힌_종목은_한_번만_센다():
+    """groups 에 (B, g1) 이 중복돼도 n_g 와 합은 한 번만 반영돼야 한다."""
+    groups = pd.concat([_groups(GROUPS), _groups({"g1": ["B"]})], ignore_index=True)
+
+    s = build_scores(_two_day_panel(), groups, kind="theme")
+    d1 = s[s["score_date"] == D1].set_index("stock_code")
+
+    m = sum(RETS_D1.values()) / len(RETS_D1)
+    others = [RETS_D1[c] for c in GROUPS["g1"] if c != "A"]
+    g2 = [RETS_D1[c] for c in GROUPS["g2"] if c != "A"]
+    r1 = sum(others) / len(others) - m
+    r2 = sum(g2) / len(g2) - m
+    assert d1.loc["A", "score"] == pytest.approx((r1 + r2) / 2)  # g1 크기가 6 으로 부풀면 틀어진다
