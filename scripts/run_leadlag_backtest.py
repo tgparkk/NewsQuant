@@ -40,6 +40,10 @@ DEFAULT_PERIOD = "main=2024-01-02:2026-10-07"
 HIT_TOP_NS = (10, 50)
 N_QUANTILES = 5
 SIG_LEVEL = 0.05          # 스펙 §7 — 통과 = HAC p < 0.05 이고 평균 IC > 0
+# 겹침 수익 보정 — ret_h1 은 2 세션, ret_h5 는 6 세션에 걸쳐 연속한 날끼리 1 / 5 세션이
+# 겹친다. lag h+1 의 Bartlett 커널이 바로 그 겹침 자기공분산을 감쇠시키고, 강건성 통계는
+# lag ROBUST_LAG_MULT*(h+1) 을 쓴다(2026-10-07, 주 구간 출력을 읽기 전에 사전 등록, §13).
+ROBUST_LAG_MULT = 2
 SAME_DAY_IC_BIG = 0.05    # 스펙 §13 — 동조화 판별표의 「당일 IC 큼」 = 당일 IC > 0.05
 
 
@@ -122,6 +126,7 @@ def _run_arm_set(db, kind: str, period: str, start: date, end: date,
         ic = daily_ic(df, score_col="score", ret_col=col)
         s = ic_summary(ic)
         hac = hac_t(ic, lag=h + 1)     # h1/h5 수익 구간의 겹침까지 덮도록 lag = h+1 (스펙 §13)
+        hac_r = hac_t(ic, lag=ROBUST_LAG_MULT * (h + 1))   # 사전 등록 강건성 통계 (§13)
         obs = _ic_obs_count(df, ic, score_col="score", ret_col=col)
         cs = _cross_section_stats(df, col, score_col="score")
         med = cs["median"] if cs else float("nan")
@@ -139,13 +144,16 @@ def _run_arm_set(db, kind: str, period: str, start: date, end: date,
         results[key] = {"kind": kind, "period": period, "start": start, "end": end, "h": h,
                         "summary": s, "p_perm": p_perm, "perm_skipped": n_perm <= 0,
                         "p_hac": hac["p_hac"], "t_hac": hac["t_hac"], "se_hac": hac["se_hac"],
-                        "lag": hac["lag"], "same_ic": same_s["mean_ic"], "tag": tag}
+                        "lag": hac["lag"], "t_hac_r": hac_r["t_hac"],
+                        "p_hac_r": hac_r["p_hac"], "lag_r": hac_r["lag"], "same_ic": same_s["mean_ic"], "tag": tag}
         hr_str = " · ".join(f"히트율top{n} {_fmt_metric(v, '.3f')}" for n, v in hrs.items())
         lines.append(f"  h{h}{tag}: 평균IC {_fmt_metric(s['mean_ic'], '+.4f')} "
                      f"(거래일 {s['n_days']}·관측 {obs:,}·횡단면 중앙값 {_fmt_metric(med, '.0f')}"
                      f"·평균 {_fmt_metric(cs_mean, '.0f')}) "
                      f"· HAC t {_fmt_metric(hac['t_hac'], '+.2f')} (lag {hac['lag']}) "
-                     f"· HAC p={_fmt_metric(hac['p_hac'], '.3f')} · {hr_str} · {perm_str}")
+                     f"· HAC p={_fmt_metric(hac['p_hac'], '.3f')} "
+                     f"· 강건 HAC t {_fmt_metric(hac_r['t_hac'], '+.2f')} (lag {hac_r['lag']}) "
+                     f"p={_fmt_metric(hac_r['p_hac'], '.3f')} · {hr_str} · {perm_str}")
 
     q = quantile_returns(df, "excess_h1", n_q=N_QUANTILES, score_col="score")
     if not q.empty:
@@ -179,9 +187,12 @@ def _verdict(primary: dict) -> str:
         reading = "익일 되돌림 → 별건"
     else:
         reading = "동조화뿐, 알파 아님 → 끝"
+    pr = primary["p_hac_r"]
+    agree = "일치" if (pr < SIG_LEVEL) == (p < SIG_LEVEL) else "불일치(한계적)"
+    robust = f" · 강건(lag {primary['lag_r']}) p={_fmt_metric(pr, '.3f')} → {agree}"
     return (f"H1 판정 [{span}]: {'통과' if passed else '실패'} — 평균IC {s['mean_ic']:+.4f}, "
             f"HAC t {t:+.2f} (lag {primary['lag']}), HAC p={p:.3f}, "
-            f"당일 IC {_fmt_metric(same, '+.4f')} → {reading}")
+            f"당일 IC {_fmt_metric(same, '+.4f')} → {reading}{robust}")
 
 
 def _emit(lines: List[str], start: int) -> int:
@@ -244,6 +255,7 @@ def main() -> int:
         lines.append(f"  {k:<24} IC {_fmt_metric(s['mean_ic'], '+.4f')} "
                      f"· HAC t {_fmt_metric(v['t_hac'], '+.2f')} "
                      f"· HAC p {_fmt_metric(v['p_hac'], '.3f')} "
+                     f"· 강건p {_fmt_metric(v['p_hac_r'], '.3f')} "
                      f"· Holm(HAC p) {padj} "
                      f"· 순열 p(참고) {pperm} "
                      f"· 당일IC {_fmt_metric(v['same_ic'], '+.4f')}")
@@ -257,7 +269,8 @@ def main() -> int:
                  "h1/h5 는 «다음 관측행»(거래정지 결측 시 D+2/D+6) · 밤사이 갭 미측정 · "
                  "판정은 HAC t(Newey-West, lag=h+1) · 순열 p 는 횡단면 독립을 가정해 "
                  "그룹 구조에서 과소추정되므로 참고만(§7 개정) · "
-                 "평균IC 는 일자 가중, 히트율·분위수는 행 가중")
+                 "평균IC 는 일자 가중, 히트율·분위수는 행 가중 "
+                 "· 강건 HAC(lag=2(h+1)) 는 사전 등록된 보조 통계(§13)")
 
     _emit(lines, printed)
     _write_out(args.out, lines)

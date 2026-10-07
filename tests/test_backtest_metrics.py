@@ -385,6 +385,17 @@ def test_hac_t는_양의_자기상관이면_t가_작아진다():
     assert math.isfinite(plain) and math.isfinite(hac)
     assert abs(hac) < abs(plain)
 
+    # 손계산 핀 — hac_t 를 거치지 않고 자기공분산 γ0..γ3 에서 직접 유도한다.
+    xs = s.tolist()
+    n = len(xs)
+    mean = sum(xs) / n
+    gam = [sum((xs[i] - mean) * (xs[i - k] - mean) for i in range(k, n)) / n
+           for k in range(4)]
+    var = gam[0] + 2 * sum((1 - k / 4) * gam[k] for k in (1, 2, 3))   # Bartlett, lag 3
+    assert var == pytest.approx(0.0308333333, rel=1e-6)
+    assert mean / math.sqrt(var / n) == pytest.approx(0.8822575, rel=1e-6)
+    assert hac_t(s, 3)["t_hac"] == pytest.approx(0.02 / math.sqrt(0.0308333333 / 60), rel=1e-6)
+
 
 def test_hac_t는_정규근사_양측_p를_돌려준다():
     s = pd.Series([0.05, 0.01, 0.04, -0.02, 0.06, 0.03, 0.00, 0.05, 0.02, 0.04])
