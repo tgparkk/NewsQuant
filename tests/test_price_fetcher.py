@@ -105,3 +105,78 @@ def test_분석기는_자기_DB_연결을_가격_조회기에_넘긴다(db):
     from news_scraper.trading_analyzer import TradingAnalyzer
     a = TradingAnalyzer()
     assert a.price_fetcher.db is a.db
+
+
+# ── 조용한 실패 방지(리뷰 반영) — 원래 버그가 «오류 없이 3주» 였다 ──────────
+
+class _Cur:
+    def __init__(self, rows=None, exc=None):
+        self.rows, self.exc = rows or [], exc
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, sql, args):
+        if self.exc:
+            raise self.exc
+
+    def fetchall(self):
+        return self.rows
+
+
+class _Conn:
+    def __init__(self, cur):
+        self.cur = cur
+
+    def cursor(self):
+        return self.cur
+
+    def rollback(self):
+        pass
+
+
+class _DB:
+    def __init__(self, rows=None, exc=None):
+        self.conn = _Conn(_Cur(rows, exc))
+        self.returned = 0
+
+    def get_connection(self):
+        return self.conn
+
+    def _put_connection(self, conn):
+        self.returned += 1
+
+
+@pytest.fixture
+def fresh_flags(monkeypatch):
+    from news_scraper import price_fetcher as PF
+    monkeypatch.setattr(PF, "_warned", set())
+
+
+def test_빈_결과는_프로세스당_한번_경고(caplog, fresh_flags):
+    f = PriceFetcher(_DB(rows=[]))
+    with caplog.at_level("WARNING", logger="news_scraper.price_fetcher"):
+        assert f.get_daily_price("123456").empty
+        assert f.get_daily_price("654321").empty
+    warns = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warns) == 1 and "daily_prices" in warns[0].getMessage()
+
+
+def test_오래된_최신봉은_갱신_멈춤_경고(caplog, fresh_flags):
+    rows = [("2020-01-03", 100, 100, 100, 100, 1), ("2020-01-02", 99, 99, 99, 99, 1)]
+    f = PriceFetcher(_DB(rows=rows))
+    with caplog.at_level("WARNING", logger="news_scraper.price_fetcher"):
+        df = f.get_daily_price("005930")
+    assert len(df) == 2
+    assert any("2020-01-03" in r.getMessage() and r.levelname == "WARNING" for r in caplog.records)
+
+
+def test_조회_오류는_경고_뒤_다시_던지고_연결은_반환(caplog):
+    db = _DB(exc=RuntimeError("db down"))
+    with caplog.at_level("WARNING", logger="news_scraper.price_fetcher"), pytest.raises(RuntimeError):
+        PriceFetcher(db).get_daily_price("005930")
+    assert db.returned == 1
+    assert any("db down" in r.getMessage() for r in caplog.records if r.levelname == "WARNING")

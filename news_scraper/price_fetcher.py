@@ -24,6 +24,17 @@ COLUMNS = ['날짜', '종가', '전일비', '시가', '고가', '저가', '거�
 # 풀스캔이 된다(종목당 0.36초 → 0.1ms). 코드는 호출 전에 strip 하고, 공백 붙은 코드는 0행(2026-10-09 실측).
 _SELECT = ("SELECT date, close, open, high, low, volume FROM daily_prices "
            "WHERE stock_code = %s AND close IS NOT NULL AND close > 0 ")
+# 최신 봉이 이보다 오래되면 RoboTrader 의 일봉 채우기가 멈춘 것으로 본다(연휴 최대 5일 + 여유).
+STALE_DAYS = 7
+# 원래 버그는 «오류 없이 3주» 였다 — 호출부(trading_analyzer)가 예외를 DEBUG 로 삼키므로
+# 빈 결과·낡은 데이터는 여기서 WARNING 으로 한 번씩 알린다(수백 종목 반복 경고는 막는다).
+_warned: set = set()
+
+
+def _warn_once(key: str, msg: str, *args) -> None:
+    if key not in _warned:
+        _warned.add(key)
+        logger.warning(msg + " (이 프로세스에서 같은 경고는 생략)", *args)
 
 
 def to_frame(rows: Sequence[tuple]) -> pd.DataFrame:
@@ -64,7 +75,16 @@ class PriceFetcher:
         n = pages * ROWS_PER_PAGE
         # 한 행 더 읽어 마지막 행의 전일비도 채운다
         rows = self._query(_SELECT + "ORDER BY date DESC LIMIT %s", (code, n + 1))
-        return to_frame(rows).head(n)
+        df = to_frame(rows).head(n)
+        if df.empty:
+            logger.debug("daily_prices 에 %s 일봉 없음", code)
+            _warn_once("empty", "daily_prices 에 일봉이 없는 종목이 있다(예: %s) — 선반영 체크가 그 종목을 건너뛴다", code)
+        else:
+            latest = df['날짜'].iloc[0]
+            if (pd.Timestamp.now().normalize() - latest).days > STALE_DAYS:
+                _warn_once("stale", "daily_prices 최신 봉이 %s (%s) — 일봉 갱신이 멈췄을 수 있다",
+                           latest.date().isoformat(), code)
+        return df
 
     def get_price_at_date(self, stock_code: str, target_date: str) -> dict:
         """target_date(YYYY-MM-DD) 그날 일봉. 그날 봉이 없으면(휴장·정지·미수집) {}."""
@@ -85,6 +105,10 @@ class PriceFetcher:
             with conn.cursor() as cur:
                 cur.execute(sql, args)
                 return cur.fetchall()
+        except Exception as e:
+            # 호출부가 DEBUG 로 삼키므로 여기서 보이게 남기고 다시 던진다.
+            logger.warning("daily_prices 조회 실패: %s: %s", type(e).__name__, e)
+            raise
         finally:
             # 풀 반환은 rollback 실패로도 생략되면 안 된다(분석기가 종목마다 부른다).
             try:
@@ -93,7 +117,3 @@ class PriceFetcher:
                 logger.debug("daily_prices 조회 뒤 rollback 실패: %s", e)
             self.db._put_connection(conn)
 
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    print(PriceFetcher().get_daily_price("005930").head())
