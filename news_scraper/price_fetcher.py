@@ -11,9 +11,10 @@ HTTP 410 Gone 으로 폐기됐다(옛 sise/main 페이지는 stock.naver.com 으
 메서드·열 이름·pages 의미는 옛 네이버 수집기 그대로라 호출부는 바꾸지 않는다.
 """
 import logging
-from typing import Optional, Sequence
+from collections.abc import Sequence
 
 import pandas as pd
+import psycopg2
 
 logger = logging.getLogger(__name__)
 
@@ -88,8 +89,8 @@ class PriceFetcher:
             # 풀 반환은 rollback 실패로도 생략되면 안 된다(분석기가 종목마다 부른다).
             try:
                 conn.rollback()
-            except Exception:
-                pass
+            except psycopg2.Error as e:
+                logger.debug("daily_prices 조회 뒤 rollback 실패: %s", e)
             self.db._put_connection(conn)
 
 
