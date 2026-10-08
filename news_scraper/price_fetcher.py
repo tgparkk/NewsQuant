@@ -1,128 +1,119 @@
-import requests
-import pandas as pd
-from datetime import datetime
-import time
+"""주가 일봉 조회 — 공유 DB(kis_template) `daily_prices`(KRX 일봉).
+
+2026-09-18 네이버 금융 옛 일별 시세 페이지(finance.naver.com/item/sise_day.naver)가
+HTTP 410 Gone 으로 폐기됐다(옛 sise/main 페이지는 stock.naver.com 으로 302). 그 뒤
+매 요청이 실패해 선반영 체크(trading_analyzer._adjust_for_price_reaction)가 조용히
+무력화됐다. 새 네이버 API(m.stock.naver.com)는 종가가 NXT 애프터마켓 포함이라 KRX
+종가와 다르다(2026-10-09 실측 8종목 80일 중 65일 불일치). 그래서 백테스트
+(`backtest/price_asof.DailyPriceAsOf`)와 같은 기준인 KRX `daily_prices` 를 읽는다.
+
+장중에는 그날 봉이 아직 없다 — 첫 행은 직전 거래일 종가다(RoboTrader 가 장 마감 뒤 채운다).
+메서드·열 이름·pages 의미는 옛 네이버 수집기 그대로라 호출부는 바꾸지 않는다.
+"""
 import logging
-from bs4 import BeautifulSoup
+from collections.abc import Sequence
+
+import pandas as pd
+import psycopg2
 
 logger = logging.getLogger(__name__)
 
+ROWS_PER_PAGE = 10          # 옛 네이버 페이지 1쪽 = 10거래일 — pages 인자 의미를 유지한다
+COLUMNS = ['날짜', '종가', '전일비', '시가', '고가', '저가', '거래량']
+# stock_code 를 식으로 감싸지 않는다(trim 등) — PK(stock_code, date) 인덱스를 못 타 324만 행
+# 풀스캔이 된다(종목당 0.36초 → 0.1ms). 코드는 호출 전에 strip 하고, 공백 붙은 코드는 0행(2026-10-09 실측).
+_SELECT = ("SELECT date, close, open, high, low, volume FROM daily_prices "
+           "WHERE stock_code = %s AND close IS NOT NULL AND close > 0 ")
+# 최신 봉이 이보다 오래되면 RoboTrader 의 일봉 채우기가 멈춘 것으로 본다(연휴 최대 5일 + 여유).
+STALE_DAYS = 7
+# 원래 버그는 «오류 없이 3주» 였다 — 호출부(trading_analyzer)가 예외를 DEBUG 로 삼키므로
+# 빈 결과·낡은 데이터는 여기서 WARNING 으로 한 번씩 알린다(수백 종목 반복 경고는 막는다).
+_warned: set = set()
+
+
+def _warn_once(key: str, msg: str, *args) -> None:
+    if key not in _warned:
+        _warned.add(key)
+        logger.warning(msg + " (이 프로세스에서 같은 경고는 생략)", *args)
+
+
+def to_frame(rows: Sequence[tuple]) -> pd.DataFrame:
+    """(date, close, open, high, low, volume) 행 → 옛 네이버 표와 같은 열·형(최신순).
+
+    전일비 = 종가 − 바로 앞 거래일 종가(부호 있음). 가장 옛 행은 앞 종가가 없어 NaN.
+    거래량은 원값(adj_factor 미적용) — 옛 네이버 표와 같다.
+    """
+    if not rows:
+        return pd.DataFrame(columns=COLUMNS)
+    df = pd.DataFrame(list(rows), columns=['날짜', '종가', '시가', '고가', '저가', '거래량'])
+    df['날짜'] = pd.to_datetime(df['날짜'].astype(str))
+    for col in ['종가', '시가', '고가', '저가', '거래량']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    df = df.sort_values('날짜', ascending=False).reset_index(drop=True)
+    df['전일비'] = df['종가'] - df['종가'].shift(-1)
+    return df[COLUMNS]
+
+
 class PriceFetcher:
-    """주가 데이터 수집기 (네이버 금융 기반)"""
-    
-    BASE_URL = "https://finance.naver.com/item/sise_day.naver"
-    HEADERS = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
+    """주가 일봉 조회기(daily_prices · KRX). db 를 주지 않으면 처음 쓸 때 NewsDatabase 를 연다."""
+
+    def __init__(self, db=None):
+        self._db = db
+
+    @property
+    def db(self):
+        if self._db is None:
+            from .database import NewsDatabase
+            self._db = NewsDatabase()
+        return self._db
 
     def get_daily_price(self, stock_code: str, pages: int = 1) -> pd.DataFrame:
-        """
-        특정 종목의 일별 시세를 가져옵니다.
-        
-        Args:
-            stock_code: 종목 코드 (6자리)
-            pages: 가져올 페이지 수 (1페이지당 10일치)
-            
-        Returns:
-            DataFrame: 날짜, 종가, 전일비, 시가, 고가, 저가, 거래량
-        """
-        all_df = []
-        
-        for page in range(1, pages + 1):
-            url = f"{self.BASE_URL}?code={stock_code}&page={page}"
-            try:
-                # lxml이 설치되어 있지 않을 경우를 대비해 html5lib 또는 html.parser 사용
-                # 여기서는 requests로 텍스트를 먼저 가져옴
-                # timeout 필수 - 신호원장 잡이 스냅샷마다 수백 종목을 순차 조회한다.
-                # 없으면 멈춘 연결 하나가 스케줄러 워커를 영구 점유한다.
-                response = requests.get(url, headers=self.HEADERS, timeout=(3, 5))
-                if response.status_code != 200:
-                    logger.error(f"주가 수집 실패: {stock_code}, HTTP {response.status_code}")
-                    continue
-                
-                # pandas의 read_html을 사용하여 테이블 추출
-                # Note: StringIO를 사용하거나 직접 문자열을 넘김
-                try:
-                    df_list = pd.read_html(response.text, flavor='bs4')
-                except ImportError:
-                    df_list = pd.read_html(response.text)
-                    
-                if not df_list:
-                    continue
-                
-                # 데이터가 들어있는 테이블 찾기 (보통 첫 번째 또는 두 번째)
-                # 네이버 금융 일별 시세는 보통 첫 번째 유효한 테이블이 데이터임
-                df = None
-                for d in df_list:
-                    if '날짜' in d.columns and len(d) > 1:
-                        df = d
-                        break
-                
-                if df is None or df.empty:
-                    continue
-                
-                df = df.dropna(subset=['날짜'])
-                all_df.append(df)
-                time.sleep(0.1) # 서버 부하 방지
-                
-            except Exception as e:
-                logger.error(f"주가 수집 오류: {stock_code}, {e}")
-                
-        if not all_df:
-            return pd.DataFrame()
-            
-        final_df = pd.concat(all_df).drop_duplicates()
-        
-        # 컬럼명 정리 및 날짜 형식 변환
-        final_df.columns = ['날짜', '종가', '전일비', '시가', '고가', '저가', '거래량']
-        
-        # 날짜 타입 강제 변환 (이미 datetime인 경우 대비)
-        if not pd.api.types.is_datetime64_any_dtype(final_df['날짜']):
-            final_df['날짜'] = pd.to_datetime(final_df['날짜'].astype(str).str.replace('.', '-'))
-        
-        # 숫자형 변환
-        cols = ['종가', '전일비', '시가', '고가', '저가', '거래량']
-        for col in cols:
-            final_df[col] = pd.to_numeric(final_df[col], errors='coerce')
-            
-        return final_df.sort_values('날짜', ascending=False)
+        """최근 pages×10 거래일 일봉(최신순). 열 = 날짜·종가·전일비·시가·고가·저가·거래량."""
+        code = (stock_code or '').strip()
+        if not code or pages < 1:
+            return pd.DataFrame(columns=COLUMNS)
+        n = pages * ROWS_PER_PAGE
+        # 한 행 더 읽어 마지막 행의 전일비도 채운다
+        rows = self._query(_SELECT + "ORDER BY date DESC LIMIT %s", (code, n + 1))
+        df = to_frame(rows).head(n)
+        if df.empty:
+            logger.debug("daily_prices 에 %s 일봉 없음", code)
+            _warn_once("empty", "daily_prices 에 일봉이 없는 종목이 있다(예: %s) — 선반영 체크가 그 종목을 건너뛴다", code)
+        else:
+            latest = df['날짜'].iloc[0]
+            if (pd.Timestamp.now().normalize() - latest).days > STALE_DAYS:
+                _warn_once("stale", "daily_prices 최신 봉이 %s (%s) — 일봉 갱신이 멈췄을 수 있다",
+                           latest.date().isoformat(), code)
+        return df
 
     def get_price_at_date(self, stock_code: str, target_date: str) -> dict:
-        """
-        특정 날짜의 주가 정보를 가져옵니다.
-        
-        Args:
-            stock_code: 종목 코드
-            target_date: 대상 날짜 (YYYY-MM-DD)
-            
-        Returns:
-            dict: 해당 날짜의 주가 정보
-        """
-        df = self.get_daily_price(stock_code, pages=2) # 최근 20일치 조회
-        if df.empty:
+        """target_date(YYYY-MM-DD) 그날 일봉. 그날 봉이 없으면(휴장·정지·미수집) {}."""
+        code = (stock_code or '').strip()
+        if not code:
             return {}
-            
-        # 시간 정보 제거하고 날짜만 비교
-        target_dt = pd.to_datetime(target_date).normalize()
-        df['날짜'] = df['날짜'].dt.normalize()
-        
-        # 해당 날짜와 일치하는 행 찾기
-        match = df[df['날짜'] == target_dt]
-        
-        if not match.empty:
-            result = match.iloc[0].to_dict()
-            # Timestamp 객체를 문자열로 변환
-            result['날짜'] = result['날짜'].strftime('%Y-%m-%d')
-            return result
-        return {}
+        day = pd.to_datetime(target_date).date().isoformat()
+        df = to_frame(self._query(_SELECT + "AND date <= %s ORDER BY date DESC LIMIT 2", (code, day)))
+        if df.empty or df['날짜'].iloc[0].date().isoformat() != day:
+            return {}
+        result = df.iloc[0].to_dict()
+        result['날짜'] = day
+        return result
 
-if __name__ == "__main__":
-    # 테스트 코드
-    import sys
-    logging.basicConfig(level=logging.INFO)
-    fetcher = PriceFetcher()
-    code = "005930"
-    target = "2026-01-09"
-    print(f"[{code}] {target} 주가 조회 중...")
-    price = fetcher.get_price_at_date(code, target)
-    print(f"결과: {price}")
+    def _query(self, sql: str, args: tuple) -> list:
+        conn = self.db.get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, args)
+                return cur.fetchall()
+        except Exception as e:
+            # 호출부가 DEBUG 로 삼키므로 여기서 보이게 남기고 다시 던진다.
+            logger.warning("daily_prices 조회 실패: %s: %s", type(e).__name__, e)
+            raise
+        finally:
+            # 풀 반환은 rollback 실패로도 생략되면 안 된다(분석기가 종목마다 부른다).
+            try:
+                conn.rollback()
+            except psycopg2.Error as e:
+                logger.debug("daily_prices 조회 뒤 rollback 실패: %s", e)
+            self.db._put_connection(conn)
+
