@@ -41,7 +41,7 @@ class TradingAnalyzer:
                 f"알 수 없는 볼륨 기준선 표: {volume_table!r} — {_VOLUME_TABLES} 중 하나여야 한다"
             )
         self.db = NewsDatabase(db_path)
-        self.price_fetcher = price_fetcher or PriceFetcher()
+        self.price_fetcher = price_fetcher or PriceFetcher(self.db)
         self.volume_table = volume_table
         # 클래스 속성이면 인스턴스 사이로 새 나간다. 거래일마다 분석기를
         # 새로 만드는 백테스트에서는 첫날 캐시가 내내 재사용된다.
