@@ -12,6 +12,7 @@ import logging
 import re
 import time
 import hashlib
+import codecs
 from collections import Counter
 
 from news_scraper.http_guard import (
@@ -531,7 +532,8 @@ class BaseCrawler(ABC):
         """
         stats = self._stats
         if not stats['requests'] and not stats['skipped']:
-            # 이 크롤러는 fetch_page 를 쓰지 않는다 (dart·global_news 는 자체 HTTP/RSS).
+            # 이 크롤러는 fetch_page 를 쓰지 않는다 (dart 는 자체 HTTP, global_news 는
+            # RSS 만 받고 본문 요청이 0건인 사이클).
             # '요청 0 · 성공 0' 을 찍으면 «아무것도 안 했다»로 오해된다.
             return ""
         parts = [f"요청 {stats['requests']}", f"성공 {stats['success']}"]
@@ -700,9 +702,17 @@ class BaseCrawler(ABC):
         try:
             temp_html = html_content_raw.decode('utf-8', errors='ignore')
             if 'charset' in temp_html.lower():
-                charset_match = _CHARSET_RE.search(temp_html)
-                if charset_match:
-                    charset = charset_match.group(1).lower()
+                # 데이터 URI(data:image/svg+xml;charset=utf-8,%3Csvg…) 가 먼저 걸리면
+                # 'utf-8,%3csvg' 같은 값이 나와 decode 가 LookupError 로 터진다
+                # (CNBC 2026-10-12 실측). 파이썬이 아는 이름이 나올 때까지 넘긴다.
+                for charset_match in _CHARSET_RE.finditer(temp_html):
+                    candidate = charset_match.group(1).lower()
+                    try:
+                        codecs.lookup(candidate)
+                    except LookupError:
+                        continue
+                    charset = candidate
+                    break
         except Exception:
             pass
 
