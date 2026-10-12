@@ -431,3 +431,41 @@ def test_JSON_파싱_실패도_사이클_요약에_잡힌다(sleeps):
     crawler.fetch_json("https://stock.naver.com/api/x")
 
     assert "응답형식오류 1" in crawler.cycle_summary()
+
+
+# --------------------------------------------------------------------------
+# 문자셋 추정 - 데이터 URI 의 charset 을 페이지 문자셋으로 오인하면 안 된다
+# --------------------------------------------------------------------------
+
+SVG_DATA_URI_HTML = (
+    '<html><head><title>CNBC</title></head><body>'
+    '<img src="data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27%3E%3C/svg%3E">'
+    '<p>Oil falls after ceasefire 한글 본문</p></body></html>'
+)
+
+
+def test_데이터_URI의_charset이_먼저_걸려도_디코딩된다(sleeps):
+    """CNBC 2026-10-12 실측: 첫 charset 매치가 'utf-8,%3Csvg' 라 LookupError 로 본문이 비었다."""
+    crawler = make_crawler([200])
+    crawler.session.get = lambda url, timeout=None, **kw: FakeResponse(200, SVG_DATA_URI_HTML)
+
+    soup = crawler.fetch_page("https://www.cnbc.com/2026/10/12/x.html")
+
+    assert soup is not None
+    assert "Oil falls after ceasefire 한글 본문" in soup.get_text()
+
+
+def test_앞선_charset이_무효하면_다음_유효한_charset을_쓴다(sleeps):
+    """첫 매치만 보면 데이터 URI 뒤의 진짜 <meta charset="euc-kr"> 을 놓친다."""
+    html = (
+        '<html><head><img src="data:image/svg+xml;charset=utf-8,%3Csvg%3E">'
+        '<meta charset="euc-kr"></head><body><p>한글 본문 확인</p></body></html>'
+    )
+    crawler = make_crawler([200])
+    resp = FakeResponse(200, "")
+    resp.content = html.encode("euc-kr")
+    crawler.session.get = lambda url, timeout=None, **kw: resp
+
+    soup = crawler.fetch_page("https://example.kr/x")
+
+    assert "한글 본문 확인" in soup.get_text()
