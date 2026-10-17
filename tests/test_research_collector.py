@@ -3,7 +3,8 @@ import copy
 import json
 import logging
 import re
-from datetime import date
+from contextlib import contextmanager
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -45,7 +46,12 @@ class FakeCursor:
         self.conn.executed.append((sql, params))
         if self.conn.fail_on and self.conn.fail_on in sql:
             raise RuntimeError("db boom")
-        if sql.lstrip().upper().startswith("SELECT NID FROM RESEARCH_REPORTS"):
+        if "to_regclass" in sql:
+            self._result = [("research_reports" if self.conn.has_table else None,)]
+        elif "max(write_date)" in sql:
+            dates = [r["write_date"] for r in self.conn.table.values() if r.get("write_date")]
+            self._result = [(max(dates) if dates else None,)]
+        elif sql.lstrip().upper().startswith("SELECT NID FROM RESEARCH_REPORTS"):
             wanted = set(params[0])
             self._result = [(n,) for n in sorted(wanted & set(self.conn.table))]
         elif "INSERT INTO research_reports" in sql:
@@ -68,13 +74,27 @@ class FakeCursor:
 
 
 class FakeConn:
-    def __init__(self, known=(), fail_on=None):
-        self.table = {n: {"nid": n} for n in known}
+    def __init__(self, known=(), fail_on=None, has_table=True, known_date=None):
+        self.table = {n: {"nid": n, "write_date": known_date} for n in known}
         self.executed = []
         self.inserted_rows = []
         self.commits = 0
         self.rollbacks = 0
         self.fail_on = fail_on
+        self.has_table = has_table
+        self.borrowed = False
+        self.borrows = 0
+
+    @contextmanager
+    def borrow(self):
+        """풀에서 잠깐 빌리는 연결 흉내 — 빌린 동안 borrowed=True."""
+        assert not self.borrowed, "연결을 겹쳐 빌렸다"
+        self.borrowed = True
+        self.borrows += 1
+        try:
+            yield self
+        finally:
+            self.borrowed = False
 
     def cursor(self):
         return FakeCursor(self)
@@ -99,6 +119,47 @@ class FakeFetch:
         if isinstance(p, Exception):
             raise p
         return p
+
+
+class FakeFeed:
+    """실제 API 처럼 전체 목록(최신 nid 먼저)을 index·size 로 잘라 준다(쪽 크기를 바꿔도 겹침이 재현된다)."""
+
+    def __init__(self, items, max_size=50):
+        self.items = items
+        self.max_size = max_size
+        self.calls = []
+
+    def __call__(self, index, size):
+        self.calls.append((index, size))
+        if size > self.max_size:
+            raise rc.ResearchFetchError("HTTP 400 too_big")
+        chunk = self.items[index * size:(index + 1) * size]
+        return _page(chunk, has_next=(index + 1) * size < len(self.items))
+
+
+def _feed_items(n, start_nid=5000, start_date=date(2026, 10, 16), per_day=None):
+    """nid 내림차순 항목 n 개. per_day 를 주면 그 개수마다 하루씩 과거로."""
+    out = []
+    for i in range(n):
+        d = start_date - timedelta(days=(i // per_day) if per_day else 0)
+        out.append(_item(start_nid - i, d.isoformat()))
+    return out
+
+
+def _fwd(conn, fetch, sleeps=None, **kw):
+    """정방향 수집 — 잠은 기록만 하고, 잘 때 연결을 빌리고 있지 않은지 확인한다."""
+    def sleep(sec):
+        assert not conn.borrowed, "잠자는 동안 연결을 쥐고 있다"
+        if sleeps is not None:
+            sleeps.append(sec)
+    return rc.collect_forward(conn.borrow, fetch=fetch, sleep=sleep, **kw)
+
+
+@pytest.fixture(autouse=True)
+def _reset_table_state():
+    rc._TABLE_STATE.update(ready=False, warned=False)
+    yield
+    rc._TABLE_STATE.update(ready=False, warned=False)
 
 
 def _pages_desc(n_pages, per_page, start_nid=1000, dates=None, last_has_next=True):
@@ -315,45 +376,31 @@ def test_fetch_page_errors_raise_fetch_error(session):
 
 
 # ── 정방향 수집 ──
-def test_forward_stops_at_two_page_cap(caplog):
-    conn = FakeConn()
-    fetch = FakeFetch(_pages_desc(4, 30))
-    with caplog.at_level(logging.INFO, logger="news_scraper.research_collector"):
-        res = rc.collect_forward(conn, fetch=fetch)
-    assert fetch.calls == [(0, 30), (1, 30)]
-    assert res["ok"] is True and res["requests"] == 2
-    assert res["new"] == 60 and res["skipped"] == 0
-    assert res["stop_reason"] == "page_cap"
-    assert len(conn.table) == 60
-    assert all(r["backfilled"] is False for r in conn.inserted_rows)
-    # 상한에 닿았는데 아는 nid 를 못 만났다 → 누락 가능 경고
-    assert any(r.levelno == logging.WARNING for r in caplog.records)
-
-
 def test_forward_stops_after_page_with_known_nid():
     pages = _pages_desc(3, 30, start_nid=1000)
     conn = FakeConn(known={985, 984})  # 첫 페이지 안(1000..971)
     fetch = FakeFetch(pages)
-    res = rc.collect_forward(conn, fetch=fetch)
+    res = _fwd(conn, fetch)
     assert fetch.calls == [(0, 30)]
     assert res["new"] == 28 and res["skipped"] == 2
     assert res["stop_reason"] == "known_nid"
     assert conn.commits >= 1
 
 
-def test_forward_known_nid_on_second_page():
+def test_forward_known_nid_on_second_page_sleeps_between_pages():
     pages = _pages_desc(3, 30, start_nid=1000)
-    conn = FakeConn(known={960})
+    conn, sleeps = FakeConn(known={960}), []
     fetch = FakeFetch(pages)
-    res = rc.collect_forward(conn, fetch=fetch)
+    res = _fwd(conn, fetch, sleeps)
     assert fetch.calls == [(0, 30), (1, 30)]
     assert res["new"] == 59 and res["skipped"] == 1 and res["stop_reason"] == "known_nid"
+    assert sleeps == [1.0]  # 요청 사이에만
 
 
 def test_forward_stops_when_has_next_false():
     pages = _pages_desc(1, 5, last_has_next=False) + _pages_desc(1, 5, start_nid=500)
     fetch = FakeFetch(pages)
-    res = rc.collect_forward(FakeConn(), fetch=fetch)
+    res = _fwd(FakeConn(), fetch)
     assert fetch.calls == [(0, 30)]
     assert res["new"] == 5 and res["stop_reason"] == "no_next"
 
@@ -361,7 +408,7 @@ def test_forward_stops_when_has_next_false():
 def test_forward_known_rows_update_read_count_only():
     conn = FakeConn()
     conn.table[1000] = {"nid": 1000, "title": "옛 제목", "backfilled": True, "read_count": 1}
-    rc.collect_forward(conn, fetch=FakeFetch(_pages_desc(1, 3, start_nid=1000)))
+    _fwd(conn, FakeFetch(_pages_desc(1, 3, start_nid=1000)))
     row = conn.table[1000]
     assert row["title"] == "옛 제목" and row["backfilled"] is True
     assert row["read_count"] == 8549
@@ -369,15 +416,27 @@ def test_forward_known_rows_update_read_count_only():
 
 def test_forward_invalid_items_are_counted_not_inserted():
     items = [_item(1000), {"nid": "", "title": "x"}, _item(999)]
-    res = rc.collect_forward(FakeConn(), fetch=FakeFetch([_page(items, has_next=False)]))
+    res = _fwd(FakeConn(), FakeFetch([_page(items, has_next=False)]))
     assert res["new"] == 2 and res["invalid"] == 1
+
+
+def test_forward_does_not_hold_connection_while_fetching():
+    conn = FakeConn(known={960})
+    inner = FakeFetch(_pages_desc(3, 30, start_nid=1000))
+
+    def fetch(index, size):
+        assert not conn.borrowed, "요청 중에 연결을 쥐고 있다"
+        return inner(index, size)
+
+    res = _fwd(conn, fetch)
+    assert res["ok"] is True and conn.borrows >= 3  # 표 확인·최근 날짜 + 쪽마다 짧게
 
 
 def test_forward_fetch_error_warns_once_and_returns(caplog):
     fetch = FakeFetch([rc.ResearchFetchError("HTTP 503")])
     conn = FakeConn()
     with caplog.at_level(logging.INFO, logger="news_scraper.research_collector"):
-        res = rc.collect_forward(conn, fetch=fetch)
+        res = _fwd(conn, fetch)
     assert res["ok"] is False and "503" in res["error"]
     assert res["requests"] == 1 and res["new"] == 0
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
@@ -388,7 +447,7 @@ def test_forward_fetch_error_warns_once_and_returns(caplog):
 def test_forward_error_on_second_page_keeps_first_page():
     pages = _pages_desc(1, 30) + [rc.ResearchFetchError("timeout")]
     conn = FakeConn()
-    res = rc.collect_forward(conn, fetch=FakeFetch(pages))
+    res = _fwd(conn, FakeFetch(pages))
     assert res["ok"] is False and res["new"] == 30 and len(conn.table) == 30
     assert conn.commits == 1
 
@@ -396,23 +455,98 @@ def test_forward_error_on_second_page_keeps_first_page():
 def test_forward_unexpected_exception_never_raises():
     def boom(index, size):
         raise KeyError("weird")
-    res = rc.collect_forward(FakeConn(), fetch=boom)
+    res = _fwd(FakeConn(), boom)
     assert res["ok"] is False and "KeyError" in res["error"]
 
 
 def test_forward_db_error_rolls_back_and_returns():
     conn = FakeConn(fail_on="INSERT INTO research_reports")
-    res = rc.collect_forward(conn, fetch=FakeFetch(_pages_desc(2, 30)))
+    res = _fwd(conn, FakeFetch(_pages_desc(2, 30)))
     assert res["ok"] is False and conn.rollbacks == 1 and conn.commits == 0
 
 
 def test_forward_logs_one_info_summary_line(caplog):
     conn = FakeConn(known={985})
     with caplog.at_level(logging.INFO, logger="news_scraper.research_collector"):
-        rc.collect_forward(conn, fetch=FakeFetch(_pages_desc(2, 30)))
+        _fwd(conn, FakeFetch(_pages_desc(2, 30)))
     infos = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
     assert len(infos) == 1
     assert "요청 1" in infos[0] and "신규 29" in infos[0] and "생략 1" in infos[0]
+
+
+# ── 따라잡기(밤·주말 밀린 리포트) ──
+def test_catchup_inserts_all_120_new_then_stops_at_known(caplog):
+    items = _feed_items(300, start_nid=5000)
+    known = {5000 - i for i in range(120, 300)}  # 121번째부터는 이미 있다
+    conn, sleeps = FakeConn(known=known, known_date=date(2026, 10, 16)), []
+    feed = FakeFeed(items)
+    with caplog.at_level(logging.INFO, logger="news_scraper.research_collector"):
+        res = _fwd(conn, feed, sleeps)
+    # 30건×2쪽 뒤 50건 쪽으로 — 60 // 50 = 1 쪽부터(겹침 10건은 이번 회차 것이라 「아는 nid」 아님)
+    assert feed.calls == [(0, 30), (1, 30), (1, 50), (2, 50)]
+    assert res["ok"] is True and res["new"] == 120 and res["stop_reason"] == "known_nid"
+    assert {5000 - i for i in range(120)} <= set(conn.table)
+    assert res["catchup_pages"] == 2
+    assert sleeps == [1.0, 1.0, 1.0]
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert all(size <= 50 for _, size in feed.calls)
+
+
+def test_catchup_stops_at_7_day_bound():
+    # 하루 20건씩 과거로 · 표의 최근 작성일 10-16 → 10-09 보다 오래된 항목이 나온 쪽 뒤 멈춤
+    items = _feed_items(1000, start_nid=5000, per_day=20)
+    conn = FakeConn(known={1}, known_date=date(2026, 10, 16))
+    feed = FakeFeed(items)
+    res = _fwd(conn, feed)
+    # 50건 쪽 3(150..199) 의 가장 오래된 항목 = 10-16 - 9일 = 10-07 < 10-09
+    assert feed.calls == [(0, 30), (1, 30), (1, 50), (2, 50), (3, 50)]
+    assert res["ok"] is True and res["stop_reason"] == "date_bound"
+    assert res["new"] == 200
+
+
+def test_catchup_page_cap_40_warns(caplog):
+    feed = FakeFeed(_feed_items(5000, start_nid=9000))
+    conn = FakeConn()  # 빈 표 → 날짜 경계 없음
+    with caplog.at_level(logging.INFO, logger="news_scraper.research_collector"):
+        res = _fwd(conn, feed)
+    assert len(feed.calls) == 2 + 40
+    assert feed.calls[2] == (1, 50) and feed.calls[-1] == (40, 50)
+    assert res["stop_reason"] == "catchup_cap" and res["catchup_pages"] == 40
+    assert res["new"] == 41 * 50
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+
+
+def test_catchup_no_next_stops():
+    feed = FakeFeed(_feed_items(130, start_nid=5000))
+    res = _fwd(FakeConn(), feed)
+    assert feed.calls == [(0, 30), (1, 30), (1, 50), (2, 50)]
+    assert res["stop_reason"] == "no_next" and res["new"] == 130
+
+
+# ── 표 없음(DDL 적용 전) ──
+def test_missing_table_skips_without_http_and_warns_once(caplog):
+    conn = FakeConn(has_table=False)
+    fetch = FakeFetch(_pages_desc(2, 30, last_has_next=False))
+    with caplog.at_level(logging.INFO, logger="news_scraper.research_collector"):
+        r1 = _fwd(conn, fetch)
+        r2 = _fwd(conn, fetch)
+    assert fetch.calls == []
+    assert r1["ok"] is False and r1["stop_reason"] == "no_table" and r2["stop_reason"] == "no_table"
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    # 나중에 표가 생기면 다시 확인해서 돈다
+    conn.has_table = True
+    r3 = _fwd(conn, fetch)
+    assert r3["ok"] is True and fetch.calls
+
+
+def test_table_check_cached_once_ready():
+    conn = FakeConn(known={985})
+    _fwd(conn, FakeFetch(_pages_desc(1, 30)))
+    _fwd(conn, FakeFetch(_pages_desc(1, 30)))
+    checks = [s for s, _ in conn.executed if "to_regclass" in s]
+    assert len(checks) == 1
 
 
 # ── 백필 ──
@@ -480,3 +614,4 @@ def test_backfill_fetch_error_stops_without_raise():
     res = rc.run_backfill(FakeConn(), fetch=FakeFetch(pages), sleep=lambda s: None)
     assert res["ok"] is False and res["inserted"] == 3 and res["last_index"] == 1
     assert "429" in res["error"]
+

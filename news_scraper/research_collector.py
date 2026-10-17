@@ -6,9 +6,17 @@ DDL: docs/research_reports_ddl_2026-10-17.sql
 - news 표·종목 연결·테마 표와 무관한 독립 경로(🔒 TN1 측정이 읽는 표는 손대지 않는다).
 - UPSERT 는 nid 기준. 이미 있는 행은 read_count·updated_at 만 갱신한다
   — first_seen_at·backfilled·본문 필드는 처음 본 그대로(시점 무결성).
-- 정방향(스케줄러 30분): 0쪽부터 최대 2쪽, 아는 nid 가 나온 쪽에서 멈춘다.
+- 정방향(스케줄러 30분 · 기동 2분 뒤 첫 실행): 0쪽부터 30건×최대 2쪽, 아는 nid 가 나온 쪽에서 멈춘다.
+  2쪽 안에 아는 nid 가 없으면 따라잡기(밤·주말 밀린 리포트): 50건 쪽으로 최대 40쪽,
+  아는 nid · 표의 최근 작성일보다 7일 넘게 오래된 항목 · hasNext=false 에서 멈춘다.
 - 백필(scripts/backfill_research_reports.py): 컷오프 날짜까지 거슬러 가며 없는 nid 만 backfilled=TRUE 로.
+  오늘(KST) 작성분은 정방향 몫이라 건너뛴다.
 - 요청 실패는 재시도 없이 WARNING 한 줄 뒤 반환한다(스케줄러로 예외를 내지 않는다).
+- DB 연결은 쪽마다 짧게 빌린다 — 요청·잠자는 동안 풀 연결을 쥐지 않는다.
+
+열린 질문(정렬): API 가 nid 내림차순(최신 등록 먼저)이라고 가정한다 — 2026-10-17 50건 표본에서
+nid 엄격 감소·writeDate 비증가 확인. 만약 writeDate 기준 정렬이면 늦게 올라온 과거 작성일 리포트가
+「아는 nid」 멈춤 뒤에 끼어 누락될 수 있다. 따라잡기의 7일 경계가 그 폭을 줄인다.
 """
 
 from __future__ import annotations
@@ -17,7 +25,8 @@ import logging
 import re
 import time as _time
 from collections.abc import Callable, Iterable
-from datetime import date
+from contextlib import AbstractContextManager
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from html import unescape
 from typing import Any
@@ -34,10 +43,16 @@ HEADERS = {
 }
 REQUEST_TIMEOUT = 10
 
+KST = timezone(timedelta(hours=9))  # Asia/Seoul (DST 없음)
+
+PAGE_SLEEP = 1.0  # 쪽 요청 사이(정방향·따라잡기·백필 공통)
 FORWARD_PAGE_SIZE = 30
 FORWARD_MAX_PAGES = 2
+CATCHUP_PAGE_SIZE = 50  # API 상한 — 50 초과는 HTTP 400 "too_big"
+CATCHUP_MAX_PAGES = 40
+CATCHUP_MAX_DAYS = 7  # 표의 최근 작성일보다 이만큼 넘게 오래된 항목이 나오면 멈춘다
 BACKFILL_PAGE_SIZE = 50
-BACKFILL_SLEEP = 1.0
+BACKFILL_SLEEP = PAGE_SLEEP
 BACKFILL_CUTOFF = date(2024, 10, 17)  # 2년 — 이 날짜 미만은 넣지 않고 멈춘다
 
 _BIGINT_MAX = 2**63 - 1
@@ -60,8 +75,14 @@ RETURNING (xmax = 0) AS inserted
 """
 
 KNOWN_NIDS_SQL = "SELECT nid FROM research_reports WHERE nid = ANY(%s)"
+MAX_DATE_SQL = "SELECT max(write_date) FROM research_reports"
+TABLE_CHECK_SQL = "SELECT to_regclass('public.research_reports')"
 
 FetchFn = Callable[[int, int], dict[str, Any]]
+BorrowFn = Callable[[], AbstractContextManager]  # 풀 연결을 잠깐 빌려 주는 컨텍스트
+
+# 표 존재 확인 — 한 번 있으면 프로세스 동안 다시 묻지 않는다 · 없을 때 WARNING 은 한 번만.
+_TABLE_STATE = {"ready": False, "warned": False}
 
 
 class ResearchFetchError(Exception):
@@ -227,39 +248,113 @@ def _safe_rollback(conn) -> None:
 
 # ───────────────────────── 정방향 수집 ─────────────────────────
 
-def collect_forward(conn, fetch: FetchFn | None = None,
-                    size: int = FORWARD_PAGE_SIZE, max_pages: int = FORWARD_MAX_PAGES) -> dict[str, Any]:
+def kst_today() -> date:
+    return datetime.now(KST).date()
+
+
+def _table_ready(borrow: BorrowFn) -> bool:
+    """research_reports 가 있는가(DDL 적용 전이면 False). 없을 때 WARNING 은 프로세스당 한 번."""
+    if _TABLE_STATE["ready"]:
+        return True
+    with borrow() as conn, conn.cursor() as cur:
+        cur.execute(TABLE_CHECK_SQL)
+        row = cur.fetchone()
+    if row and row[0]:
+        _TABLE_STATE["ready"] = True
+        return True
+    if not _TABLE_STATE["warned"]:
+        _TABLE_STATE["warned"] = True
+        logger.warning("[리서치] research_reports 표가 없음(DDL 적용 전) — 요청 없이 건너뜀 · 표가 생기면 자동 시작")
+    return False
+
+
+def _max_write_date(borrow: BorrowFn) -> date | None:
+    with borrow() as conn, conn.cursor() as cur:
+        cur.execute(MAX_DATE_SQL)
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _store_page(borrow: BorrowFn, rows: list[dict[str, Any]]) -> tuple[set[int], int]:
+    """쪽 하나를 짧게 빌린 연결로 저장한다 → (이미 있던 nid, 새로 들어간 수)."""
+    if not rows:
+        return set(), 0
+    with borrow() as conn:
+        try:
+            known = _known_nids(conn, [r["nid"] for r in rows])
+            n_new = _upsert_rows(conn, rows)
+            conn.commit()
+        except Exception:
+            _safe_rollback(conn)
+            raise
+    return known, n_new
+
+
+def collect_forward(borrow: BorrowFn, fetch: FetchFn | None = None,
+                    sleep: Callable[[float], None] = _time.sleep,
+                    size: int = FORWARD_PAGE_SIZE, max_pages: int = FORWARD_MAX_PAGES,
+                    catchup_size: int = CATCHUP_PAGE_SIZE, catchup_max_pages: int = CATCHUP_MAX_PAGES,
+                    catchup_days: int = CATCHUP_MAX_DAYS, delay: float = PAGE_SLEEP) -> dict[str, Any]:
     """0쪽부터 최신 리포트를 넣는다. 예외를 밖으로 내지 않고 항상 요약 dict 를 돌려준다.
 
-    멈춤: 아는 nid 가 있는 쪽을 넣은 뒤 · hasNext=false · max_pages 쪽.
+    borrow() 는 풀 연결을 빌려 주는 컨텍스트 — 쪽마다 짧게 빌리고 요청·잠은 연결 없이 한다.
+    멈춤: 아는 nid 가 있는 쪽을 넣은 뒤 · hasNext=false · (2쪽 안에 못 만나면) 따라잡기 규칙.
     """
     fetch = fetch or fetch_page
     t0 = _time.monotonic()
     summary: dict[str, Any] = {"ok": False, "requests": 0, "new": 0, "skipped": 0,
-                               "invalid": 0, "stop_reason": None}
+                               "invalid": 0, "catchup_pages": 0, "stop_reason": None}
+    seen: set[int] = set()  # 이번 회차에 이미 다룬 nid — 쪽 크기 전환 겹침·밀림은 「아는 nid」 아님
+
+    def step(index: int, page_size: int):
+        if summary["requests"]:
+            sleep(delay)
+        summary["requests"] += 1
+        payload = fetch(index, page_size)
+        rows, invalid = _parse_page(payload, backfilled=False)
+        summary["invalid"] += invalid
+        fresh = [r for r in rows if r["nid"] not in seen]
+        seen.update(r["nid"] for r in rows)
+        known, n_new = _store_page(borrow, fresh)
+        summary["new"] += n_new
+        summary["skipped"] += len(known)
+        return payload, rows, bool(known)
+
     try:
+        if not _table_ready(borrow):
+            summary["stop_reason"] = "no_table"
+            return summary
+        latest = _max_write_date(borrow)  # 이번 회차 전 표의 최근 작성일(따라잡기 경계)
+
         for index in range(max_pages):
-            summary["requests"] += 1
-            payload = fetch(index, size)
-            rows, invalid = _parse_page(payload, backfilled=False)
-            summary["invalid"] += invalid
-            try:
-                known = _known_nids(conn, [r["nid"] for r in rows])
-                summary["new"] += _upsert_rows(conn, rows)
-                conn.commit()
-            except Exception:
-                _safe_rollback(conn)
-                raise
-            summary["skipped"] += len(known)
-            if known:
+            payload, _, hit = step(index, size)
+            if hit:
                 summary["stop_reason"] = "known_nid"
                 break
             if not payload.get("hasNext"):
                 summary["stop_reason"] = "no_next"
                 break
         else:
-            summary["stop_reason"] = "page_cap"
-            logger.warning(f"[리서치] {max_pages}쪽 상한까지 아는 리포트가 없음 — 그 뒤 리포트 누락 가능(백필로 메울 것)")
+            # 따라잡기 — 쪽 크기를 바꾸면 경계가 달라지므로 이미 본 건수가 든 쪽부터(겹침은 seen 이 거른다)
+            floor = latest - timedelta(days=catchup_days) if latest else None
+            index = (max_pages * size) // catchup_size
+            for _ in range(catchup_max_pages):
+                payload, rows, hit = step(index, catchup_size)
+                summary["catchup_pages"] += 1
+                if hit:
+                    summary["stop_reason"] = "known_nid"
+                    break
+                if floor and rows and min(r["write_date"] for r in rows) < floor:
+                    summary["stop_reason"] = "date_bound"
+                    break
+                if not payload.get("hasNext"):
+                    summary["stop_reason"] = "no_next"
+                    break
+                index += 1
+            else:
+                summary["stop_reason"] = "catchup_cap"
+                logger.warning(f"[리서치] 따라잡기 {catchup_max_pages}쪽 상한까지 아는 리포트가 없음 "
+                               f"— 그 뒤 리포트 누락 가능(백필로 메울 것)")
         summary["ok"] = True
     except ResearchFetchError as e:
         summary["error"] = str(e)
@@ -270,7 +365,8 @@ def collect_forward(conn, fetch: FetchFn | None = None,
     summary["ms"] = int((_time.monotonic() - t0) * 1000)
     logger.info(
         f"[리서치] 요청 {summary['requests']} · 신규 {summary['new']} · 생략 {summary['skipped']} · "
-        f"무효 {summary['invalid']} · 멈춤 {summary['stop_reason'] or '오류'} · {summary['ms']}ms"
+        f"무효 {summary['invalid']} · 따라잡기 {summary['catchup_pages']}쪽 · "
+        f"멈춤 {summary['stop_reason'] or '오류'} · {summary['ms']}ms"
     )
     return summary
 

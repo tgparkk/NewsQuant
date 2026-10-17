@@ -6,6 +6,7 @@
 import logging
 import time as _time
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+from contextlib import contextmanager
 from datetime import datetime, time as dt_time, timedelta
 from typing import Dict, List, Optional, Tuple
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -429,14 +430,16 @@ class NewsScheduler:
         logger.info(f"- 신호 원장 스냅샷: 평일 {times_txt}")
 
         # 증권사 리서치 리포트 (30분) — research_reports UPSERT. news 수집 경로와 독립.
+        # 기동 2분 뒤 첫 실행: 평일 낮에만 도는 프로세스라 밤·주말 밀린 리포트를 바로 따라잡는다.
         self.scheduler.add_job(
             func=self.run_research_collection,
             trigger=IntervalTrigger(minutes=30),
             id='research_reports',
+            next_run_time=datetime.now(pytz.timezone('Asia/Seoul')) + timedelta(minutes=2),
             max_instances=1,
             misfire_grace_time=300
         )
-        logger.info("- 리서치 리포트 수집: 30분마다")
+        logger.info("- 리서치 리포트 수집: 30분마다 (기동 2분 뒤 첫 실행)")
 
         logger.info("스케줄 설정 완료")
         logger.info("- 시장 운영 시간 (월~금 09:00~15:30): 1분마다")
@@ -477,19 +480,23 @@ class NewsScheduler:
         """리서치 리포트 정방향 수집 1회. 예외는 여기서 삼킨다 (다른 잡을 깨지 않는다).
 
         항상 summary dict 를 돌려준다. 요약 INFO 한 줄은 수집기가 남긴다.
+        수집기는 풀 연결을 쪽마다 짧게 빌린다(요청·대기 중엔 쥐지 않는다).
         """
         from . import research_collector
 
-        conn = None
-        try:
+        @contextmanager
+        def borrow():
             conn = self.db.get_connection()
-            return research_collector.collect_forward(conn)
+            try:
+                yield conn
+            finally:
+                self.db._put_connection(conn)
+
+        try:
+            return research_collector.collect_forward(borrow)
         except Exception as e:
             logger.exception(f"[리서치] 수집 잡 실패: {e}")
             return {'ok': False, 'error': f"{type(e).__name__}: {e}"}
-        finally:
-            if conn is not None:
-                self.db._put_connection(conn)
 
     # ─── 신호 원장 스냅샷 ─────────────────────────────────────
 
