@@ -39,3 +39,15 @@ def test_fetch_error_exit_code_1(mod, monkeypatch):
     monkeypatch.setattr(mod.rc, "fetch_page", fetch)
 
     assert mod.main(["--config", "nope.yaml", "--dry-run"]) == 1
+
+
+def test_start_index_flag(mod, monkeypatch, capsys):
+    fetch = FakeFetch(_pages_desc(5, 3))
+    monkeypatch.setattr(mod, "_connect", _no_connect)
+    monkeypatch.setattr(mod.rc, "fetch_page", fetch)
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+
+    code = mod.main(["--config", "nope.yaml", "--dry-run", "--start-index", "3", "--max-pages", "2"])
+
+    assert code == 0 and [i for i, _ in fetch.calls] == [3, 4]
+    assert "시작 index=3" in capsys.readouterr().out

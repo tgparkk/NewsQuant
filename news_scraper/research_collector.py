@@ -376,19 +376,22 @@ def collect_forward(borrow: BorrowFn, fetch: FetchFn | None = None,
 def run_backfill(conn, fetch: FetchFn | None = None, sleep: Callable[[float], None] = _time.sleep,
                  cutoff: date = BACKFILL_CUTOFF, size: int = BACKFILL_PAGE_SIZE,
                  max_pages: int | None = None, dry_run: bool = False,
-                 delay: float = BACKFILL_SLEEP) -> dict[str, Any]:
-    """0쪽부터 거슬러 가며 없는 nid 만 backfilled=TRUE 로 넣는다(다시 돌려도 안전).
+                 delay: float = BACKFILL_SLEEP, start_index: int = 0,
+                 today: date | None = None) -> dict[str, Any]:
+    """start_index 쪽부터 거슬러 가며 없는 nid 만 backfilled=TRUE 로 넣는다(다시 돌려도 안전).
 
     멈춤: write_date < cutoff 인 항목이 나온 쪽 뒤 · hasNext=false · max_pages · 요청/DB 오류.
+    write_date >= today(KST) 는 정방향 잡 몫이라 넣지 않는다(today_skipped).
     dry_run 이면 쓰지 않는다(conn 이 있으면 아는 nid 조회만).
     """
     fetch = fetch or fetch_page
+    today = today or kst_today()
     summary: dict[str, Any] = {
         "ok": False, "requests": 0, "inserted": 0, "would_insert": 0, "skipped": 0,
-        "below_cutoff": 0, "invalid": 0, "last_index": None, "oldest_date": None,
-        "stop_reason": None,
+        "below_cutoff": 0, "today_skipped": 0, "invalid": 0, "last_index": None,
+        "oldest_date": None, "stop_reason": None,
     }
-    index = 0
+    index = start_index
     try:
         while True:
             if max_pages is not None and summary["requests"] >= max_pages:
@@ -402,8 +405,10 @@ def run_backfill(conn, fetch: FetchFn | None = None, sleep: Callable[[float], No
             rows, invalid = _parse_page(payload, backfilled=True)
             summary["invalid"] += invalid
 
-            in_range = [r for r in rows if r["write_date"] >= cutoff]
-            summary["below_cutoff"] += len(rows) - len(in_range)
+            n_below = sum(1 for r in rows if r["write_date"] < cutoff)
+            in_range = [r for r in rows if cutoff <= r["write_date"] < today]
+            summary["below_cutoff"] += n_below
+            summary["today_skipped"] += len(rows) - n_below - len(in_range)
             if in_range:
                 oldest = min(r["write_date"] for r in in_range)
                 if summary["oldest_date"] is None or oldest < summary["oldest_date"]:
@@ -422,7 +427,7 @@ def run_backfill(conn, fetch: FetchFn | None = None, sleep: Callable[[float], No
                     _safe_rollback(conn)
                     raise
 
-            if len(in_range) < len(rows):
+            if n_below:
                 summary["stop_reason"] = "cutoff"
                 break
             if not payload.get("hasNext"):

@@ -615,3 +615,23 @@ def test_backfill_fetch_error_stops_without_raise():
     assert res["ok"] is False and res["inserted"] == 3 and res["last_index"] == 1
     assert "429" in res["error"]
 
+
+def test_backfill_skips_today_and_later_kst():
+    """오늘(KST) 작성분은 정방향 잡 몫 — 백필이 backfilled=TRUE 로 넣지 않는다."""
+    items = [_item(100, "2026-10-17"), _item(99, "2026-10-16"), _item(98, "2026-10-15")]
+    conn = FakeConn()
+    res = rc.run_backfill(conn, fetch=FakeFetch([_page(items, has_next=False)]),
+                          sleep=lambda s: None, today=date(2026, 10, 16))
+    assert {r["nid"] for r in conn.inserted_rows} == {98}
+    assert res["inserted"] == 1 and res["today_skipped"] == 2
+
+
+def test_backfill_today_defaults_to_kst(monkeypatch):
+    assert rc.kst_today() == rc.datetime.now(rc.KST).date()
+
+
+def test_backfill_start_index():
+    fetch = FakeFetch(_pages_desc(6, 3, last_has_next=False))
+    res = rc.run_backfill(FakeConn(), fetch=fetch, sleep=lambda s: None, start_index=4)
+    assert [i for i, _ in fetch.calls] == [4, 5]
+    assert res["last_index"] == 5 and res["inserted"] == 6
