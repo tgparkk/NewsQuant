@@ -51,3 +51,14 @@ def test_start_index_flag(mod, monkeypatch, capsys):
 
     assert code == 0 and [i for i, _ in fetch.calls] == [3, 4]
     assert "시작 index=3" in capsys.readouterr().out
+
+
+def test_help_on_cp949_console_does_not_crash(mod, monkeypatch):
+    # Windows 콘솔(cp949)에 파이프될 때 한글 도움말이 UnicodeEncodeError 로 죽지 않아야 한다
+    import io
+    import sys
+    out = io.TextIOWrapper(io.BytesIO(), encoding="cp949")
+    monkeypatch.setattr(sys, "stdout", out)
+    with pytest.raises(SystemExit) as e:
+        mod.main(["--help"])
+    assert e.value.code == 0

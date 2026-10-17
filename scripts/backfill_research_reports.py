@@ -35,6 +35,10 @@ def _connect(config_path: str):
 
 
 def main(argv=None) -> int:
+    # 도움말(--help)도 한글이라 parse_args «전»에 바꾼다(cp949 콘솔 파이프 때 UnicodeEncodeError)
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(AttributeError, ValueError, OSError):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description="증권사 리서치 리포트 백필")
     ap.add_argument("--config", required=True, help="DB 설정 YAML(읽기 전용) — 예: D:/GIT/NewsQuant/config.yaml")
     ap.add_argument("--dry-run", action="store_true", help="DB 접속·쓰기 0, 요청·파싱 요약만 출력")
@@ -43,9 +47,6 @@ def main(argv=None) -> int:
                     help="이 쪽(index)부터 — 중단 뒤 이어 돌릴 때 출력된 「마지막 index」를 준다")
     args = ap.parse_args(argv)
 
-    for stream in (sys.stdout, sys.stderr):
-        with contextlib.suppress(AttributeError, ValueError, OSError):
-            stream.reconfigure(encoding="utf-8", errors="replace")
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
