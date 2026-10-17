@@ -428,6 +428,16 @@ class NewsScheduler:
         times_txt = ', '.join(f"{h:02d}:{m:02d}" for h, m in self.SIGNAL_LEDGER_TIMES)
         logger.info(f"- 신호 원장 스냅샷: 평일 {times_txt}")
 
+        # 증권사 리서치 리포트 (30분) — research_reports UPSERT. news 수집 경로와 독립.
+        self.scheduler.add_job(
+            func=self.run_research_collection,
+            trigger=IntervalTrigger(minutes=30),
+            id='research_reports',
+            max_instances=1,
+            misfire_grace_time=300
+        )
+        logger.info("- 리서치 리포트 수집: 30분마다")
+
         logger.info("스케줄 설정 완료")
         logger.info("- 시장 운영 시간 (월~금 09:00~15:30): 1분마다")
         logger.info("- 시장 마감 후 (월~금 15:30~24:00, 00:00~09:00): 5분마다")
@@ -462,6 +472,24 @@ class NewsScheduler:
         """섹터 뉴스 점수 집계 1회 (스펙 B). 예외는 잡 안에서 처리된다."""
         from .sector_news_job import run_sector_news_job
         return run_sector_news_job(self.db)
+
+    def run_research_collection(self) -> Dict:
+        """리서치 리포트 정방향 수집 1회. 예외는 여기서 삼킨다 (다른 잡을 깨지 않는다).
+
+        항상 summary dict 를 돌려준다. 요약 INFO 한 줄은 수집기가 남긴다.
+        """
+        from . import research_collector
+
+        conn = None
+        try:
+            conn = self.db.get_connection()
+            return research_collector.collect_forward(conn)
+        except Exception as e:
+            logger.exception(f"[리서치] 수집 잡 실패: {e}")
+            return {'ok': False, 'error': f"{type(e).__name__}: {e}"}
+        finally:
+            if conn is not None:
+                self.db._put_connection(conn)
 
     # ─── 신호 원장 스냅샷 ─────────────────────────────────────
 
